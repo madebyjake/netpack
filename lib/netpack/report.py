@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+_C_VERDICT = "\033[34m" if _USE_COLOR else ""
+_C_OFF = "\033[0m" if _USE_COLOR else ""
 
 
 def timestamp_local() -> str:
@@ -23,7 +29,7 @@ def section(title: str) -> None:
 
 def verdict(message: str, next_check: str | None = None) -> None:
     print("--")
-    print(f"VERDICT: {message}")
+    print(f"{_C_VERDICT}VERDICT:{_C_OFF} {message}")
     if next_check:
         print(f"Next: {next_check}")
 
