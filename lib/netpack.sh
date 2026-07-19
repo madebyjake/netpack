@@ -87,6 +87,22 @@ is_uint() {
   [[ "${1:-}" =~ ^[0-9]+$ ]]
 }
 
+# Validate an unsigned-integer option value within [MIN, MAX]; die otherwise.
+# Usage: require_uint LABEL VALUE MIN [MAX]
+require_uint() {
+  local label=$1 val=$2 min=$3 max=${4:-}
+  if ! is_uint "$val"; then
+    die "invalid ${label}: ${val}"
+  fi
+  # 10# guards against leading zeros being read as octal
+  if (( 10#$val < min )); then
+    die "invalid ${label}: ${val}"
+  fi
+  if [[ -n "$max" ]] && (( 10#$val > max )); then
+    die "invalid ${label}: ${val}"
+  fi
+}
+
 private_tmpdir() {
   local prefix=${1:-netpack}
   umask 077
