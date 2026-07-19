@@ -124,19 +124,19 @@ if [[ -n "$PREFIX" ]] && is_uint "$PREFIX"; then
 fi
 
 if ! command -v arp-scan >/dev/null 2>&1; then
-  echo "  arp-scan not installed"
+  echo "  $(color_status warn "arp-scan not installed")"
   echo
   echo "=== duplicate IPs ==="
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
   echo "finished: $(timestamp_local)"
   exit 0
 fi
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "  arp-scan requires root; re-run with sudo for the sweep"
+  echo "  $(color_status warn "arp-scan requires root; re-run with sudo for the sweep")"
   echo
   echo "=== duplicate IPs ==="
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
   echo "finished: $(timestamp_local)"
   exit 0
 fi
@@ -164,17 +164,17 @@ if [[ -s "$SWEEP" ]]; then
     }
   ' "$SWEEP" | sort || true)"
   if [[ -z "$dups" ]]; then
-    echo "  none"
+    echo "  $(color_status ok none)"
   else
     while IFS= read -r ip; do
       [[ -n "$ip" ]] || continue
-      echo "  DUPLICATE: ${ip}"
+      echo "  $(color_status bad "DUPLICATE: ${ip}")"
       grep -E "^${ip}[[:space:]]" "$SWEEP" | sed 's/^/    /' || true
       DUP_EXIT=2
     done <<<"$dups"
   fi
 else
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
 fi
 
 echo "finished: $(timestamp_local)"
