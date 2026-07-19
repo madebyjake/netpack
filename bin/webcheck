@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# webcheck — captive portal and HTTP interception check
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+TIMEOUT=5
+
+usage() {
+  cat <<'EOF'
+webcheck — detect captive portals and HTTP interception.
+
+Fetches well-known connectivity-check endpoints over plain HTTP (deliberate:
+portals intercept HTTP) and compares each response against its published
+expected answer. DNS and ICMP often look clean while a portal intercepts HTTP;
+run this when splitloss and dnscheck pass but "nothing works".
+
+Redirects are not followed — an unexpected redirect is the portal evidence.
+Generates a few small HTTP GET requests.
+
+Endpoints:
+  http://connectivitycheck.gstatic.com/generate_204  expect 204, empty body
+  http://detectportal.firefox.com/success.txt        expect 200, body "success"
+
+Usage:
+  webcheck [-t SECONDS]
+
+Options:
+  -t SECONDS    Per-request timeout (default: 5)
+  -h, --help    Show this help
+
+Exit codes:
+  0  all endpoints returned their expected responses
+  1  usage or dependency error
+  2  no HTTP response from one or more endpoints
+  3  unexpected response; captive portal or interception suspected
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":t:h" opt; do
+  case "$opt" in
+    t) TIMEOUT=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+require_uint timeout "$TIMEOUT" 1
+require_cmd curl
+
+DIR="$(private_tmpdir webcheck)"
+cleanup() { rm -rf "$DIR"; }
+trap cleanup EXIT
+
+UNEXPECTED=0
+FAILED=0
+
+probe() {
+  local url=$1 want_status=$2 want_body=$3
+  local body="${DIR}/body" out status redirect got_body
+  echo "${url}"
+  if ! out="$(curl -4 -s -m "$TIMEOUT" -o "$body" -w '%{http_code}\t%{redirect_url}' "$url")"; then
+    echo "  no response (connect failure, DNS failure, or timeout)"
+    FAILED=$((FAILED + 1))
+    return
+  fi
+  IFS=$'\t' read -r status redirect <<<"$out"
+  got_body="$(tr -d '[:space:]' < "$body")"
+  if [[ "$status" == "$want_status" && "$got_body" == "$want_body" ]]; then
+    echo "  status ${status}  OK"
+    return
+  fi
+  if [[ "$status" != "$want_status" ]]; then
+    if [[ -n "$redirect" ]]; then
+      echo "  status ${status}  REDIRECT -> ${redirect}"
+    else
+      echo "  status ${status}  UNEXPECTED (expected ${want_status})"
+    fi
+  else
+    echo "  status ${status}  UNEXPECTED BODY (interception suspected)"
+  fi
+  UNEXPECTED=$((UNEXPECTED + 1))
+}
+
+header webcheck
+echo "timeout: ${TIMEOUT}s per request  (plain HTTP by design; redirects not followed)"
+echo
+echo "=== probes ==="
+probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""
+echo
+probe "http://detectportal.firefox.com/success.txt" 200 "success"
+
+if (( UNEXPECTED > 0 )); then
+  verdict "unexpected HTTP response(s); captive portal or interception suspected." \
+    "Open the redirect target (or any http:// site) in a browser to reach the portal login."
+  echo "finished: $(timestamp_local)"
+  exit 3
+fi
+if (( FAILED > 0 )); then
+  verdict "no HTTP response from ${FAILED} endpoint(s)." \
+    "If splitloss and dnscheck are clean, suspect HTTP-specific filtering or a proxy requirement."
+  echo "finished: $(timestamp_local)"
+  exit 2
+fi
+verdict "connectivity endpoints returned expected responses; no portal indicated."
+echo "finished: $(timestamp_local)"
+exit 0
