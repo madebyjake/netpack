@@ -58,18 +58,23 @@ is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port
 require_cmd iperf3
 
 nft_sets_present() {
-  command -v nft >/dev/null 2>&1 || return 1
+  # Caller must be root when nft is installed; otherwise list failures look
+  # identical to missing sets.
   nft list set inet filter test_tcp >/dev/null 2>&1 \
     && nft list set inet filter test_udp >/dev/null 2>&1
 }
 
 open_port() {
-  if ! nft_sets_present; then
-    echo "warning: nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2
+  if ! command -v nft >/dev/null 2>&1; then
+    echo "warning: nft not found; firewall unchanged" >&2
     return 0
   fi
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "root privileges required to modify nftables sets; re-run with sudo"
+    die "cannot verify nft sets without root; re-run with sudo"
+  fi
+  if ! nft_sets_present; then
+    echo "warning: nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2
+    return 0
   fi
   if ! nft add element inet filter test_tcp "{ ${PORT} }"; then
     die "failed to add port ${PORT} to inet filter test_tcp"
@@ -84,6 +89,7 @@ open_port() {
 
 close_port() {
   if [[ "$NFT_OPENED" -eq 1 ]]; then
+    NFT_OPENED=0  # trap fires on both INT and EXIT; clean up once
     nft delete element inet filter test_tcp "{ ${PORT} }" 2>/dev/null || true
     nft delete element inet filter test_udp "{ ${PORT} }" 2>/dev/null || true
     echo
