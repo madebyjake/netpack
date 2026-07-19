@@ -149,7 +149,17 @@ for s in "${SERVERS[@]}"; do
     label="public"
   fi
   IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
-  printf '%-16s %-10s %-40s %s\n' "$srv" "$status" "$addrs" "$rtt"
+  case "$status" in
+    NOERROR)
+      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_OK" "$status" "$NP_C_OFF" "$addrs" "$rtt"
+      ;;
+    FAIL)
+      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_BAD" "$status" "$NP_C_OFF" "$addrs" "$rtt"
+      ;;
+    *)
+      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_WARN" "$status" "$NP_C_OFF" "$addrs" "$rtt"
+      ;;
+  esac
   LABELS+=("$label")
   STATUSES+=("$status")
   ANSWERS+=("$addrs")
