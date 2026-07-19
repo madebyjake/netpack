@@ -122,7 +122,7 @@ private_tmpdir() {
 
 verdict() {
   echo "--"
-  echo "VERDICT: $1"
+  printf '%sVERDICT:%s %s\n' "$NP_C_VERDICT" "$NP_C_OFF" "$1"
   if [[ -n "${2:-}" ]]; then
     echo "Next: $2"
   fi
@@ -136,4 +136,27 @@ timestamp_local() {
 # Print a standard tool report header: "name — <iso-local>"
 header() {
   echo "$1 — $(timestamp_local)"
+}
+
+# Status colors when stdout is a TTY; honor NO_COLOR.
+# Green = ok, red = bad/missing, amber = warn/other, blue = VERDICT label.
+NP_C_OK='' NP_C_BAD='' NP_C_WARN='' NP_C_VERDICT='' NP_C_OFF=''
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  NP_C_OK=$'\033[32m'
+  NP_C_BAD=$'\033[31m'
+  NP_C_WARN=$'\033[38;5;214m'
+  NP_C_VERDICT=$'\033[34m'
+  NP_C_OFF=$'\033[0m'
+fi
+
+# color_status ok|bad|warn [text] — colored status token.
+# Defaults: OK / MISSING / (text required for warn).
+color_status() {
+  local kind=$1 text
+  case "$kind" in
+    ok)   text=${2:-OK};      printf '%s%s%s' "$NP_C_OK" "$text" "$NP_C_OFF" ;;
+    bad)  text=${2:-MISSING}; printf '%s%s%s' "$NP_C_BAD" "$text" "$NP_C_OFF" ;;
+    warn) text=${2:?};        printf '%s%s%s' "$NP_C_WARN" "$text" "$NP_C_OFF" ;;
+    *)    printf '%s' "${2:-$1}" ;;
+  esac
 }
