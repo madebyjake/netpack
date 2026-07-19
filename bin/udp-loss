@@ -25,6 +25,9 @@ Options:
   -s SERVER      DNS server (repeatable; default: 1.1.1.1 and 9.9.9.9)
   -h, --help     Show this help
 
+Queries are sequential; a heavily lossy path can take up to COUNT seconds
+per server (1s timeout each).
+
 Interpretation:
   Both clean            UDP replies received; treat isolated mtr -u final-hop
                         loss as likely ICMP rate limiting unless corroborated
