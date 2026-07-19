@@ -56,7 +56,7 @@ while getopts ":c:s:h" opt; do
   esac
 done
 
-is_uint "$COUNT" && [[ "$COUNT" -gt 0 ]] || die "invalid count: ${COUNT}"
+require_uint count "$COUNT" 1
 require_cmd dig awk sort
 
 if [[ ${#SERVERS[@]} -eq 0 ]]; then
