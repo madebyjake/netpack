@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# netpack — launcher for network field tools
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks when installed on PATH
+if command -v readlink >/dev/null 2>&1; then
+  if resolved="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)"; then
+    ROOT="$(cd "$(dirname "$resolved")" && pwd)"
+  fi
+fi
+
+TOOLS=(
+  doctor
+  dhcpprobe
+  linkstat
+  segscan
+  splitloss
+  dnscheck
+  mtucheck
+  path3
+  udp-loss
+  ringcap
+  testsrv
+  testcli
+)
+
+describe() {
+  case "$1" in
+    doctor)    echo "Dependency and readiness checks" ;;
+    dhcpprobe) echo "DHCP servers on the local segment" ;;
+    linkstat)  echo "Link counters; physical vs congestion signals" ;;
+    segscan)   echo "Segment inventory (LLDP, gateway, ARP)" ;;
+    splitloss) echo "Concurrent gateway vs WAN loss comparison" ;;
+    dnscheck)  echo "Configured vs public DNS resolver comparison" ;;
+    mtucheck)  echo "Path MTU probe to gateway and WAN" ;;
+    path3)     echo "mtr over ICMP, UDP, and TCP" ;;
+    udp-loss)  echo "UDP loss via DNS queries with real replies" ;;
+    ringcap)   echo "Rotating packet capture ring buffer" ;;
+    testsrv)   echo "iperf3 server with timed firewall open" ;;
+    testcli)   echo "iperf3 client companion to testsrv" ;;
+    *)         echo "" ;;
+  esac
+}
+
+usage() {
+  local me t
+  me="$(basename "${BASH_SOURCE[0]}")"
+  cat <<EOF
+netpack — network field tools
+
+Usage:
+  ${me}                 Interactive menu
+  ${me} list            List tools
+  ${me} help            Show this help
+  ${me} <tool> [args]   Run a tool (arguments pass through)
+
+Also available as: netpack | npk
+
+Tools:
+EOF
+  for t in "${TOOLS[@]}"; do
+    printf "  %-10s  %s\n" "$t" "$(describe "$t")"
+  done
+  cat <<'EOF'
+
+Options:
+  -h, --help, help   Show this help
+  list, ls           List tools
+
+Tools are also available directly from this directory when it is on PATH.
+EOF
+}
+
+list_tools() {
+  local t
+  echo "netpack — network field tools"
+  echo
+  for t in "${TOOLS[@]}"; do
+    printf "  %-10s  %s\n" "$t" "$(describe "$t")"
+  done
+}
+
+run_tool() {
+  local name=$1
+  shift
+  local path="${ROOT}/${name}"
+  if [[ ! -x "$path" ]]; then
+    echo "error: tool not found or not executable: ${name}" >&2
+    echo "hint: run 'netpack list'" >&2
+    exit 1
+  fi
+  exec "$path" "$@"
+}
+
+menu() {
+  local i=1 t sel
+  echo "netpack — network field tools"
+  echo
+  for t in "${TOOLS[@]}"; do
+    printf "  %d  %-10s  %s\n" "$i" "$t" "$(describe "$t")"
+    i=$((i + 1))
+  done
+  echo
+  printf "Select tool [1-%d or name]: " "${#TOOLS[@]}"
+  if ! read -r sel; then
+    echo >&2
+    exit 1
+  fi
+  if [[ "$sel" =~ ^[0-9]+$ ]]; then
+    if (( sel < 1 || sel > ${#TOOLS[@]} )); then
+      echo "error: invalid selection" >&2
+      exit 1
+    fi
+    run_tool "${TOOLS[$((sel - 1))]}"
+  fi
+  for t in "${TOOLS[@]}"; do
+    if [[ "$sel" == "$t" ]]; then
+      run_tool "$t"
+    fi
+  done
+  echo "error: unknown tool: ${sel}" >&2
+  echo "hint: run 'netpack list'" >&2
+  exit 1
+}
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    menu
+  fi
+  case "$1" in
+    help|-h|--help)
+      usage
+      ;;
+    list|ls)
+      list_tools
+      ;;
+    *)
+      local name=$1
+      shift
+      local t
+      for t in "${TOOLS[@]}"; do
+        if [[ "$name" == "$t" ]]; then
+          run_tool "$t" "$@"
+        fi
+      done
+      echo "error: unknown tool: ${name}" >&2
+      echo "hint: run 'netpack list'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

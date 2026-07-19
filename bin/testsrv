@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# testsrv — iperf3 server with lifetime-limited nftables set membership
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+PORT=5201
+NFT_OPENED=0
+
+usage() {
+  cat <<'EOF'
+testsrv — run an iperf3 server for a planned throughput/loss test.
+
+Generates significant traffic once clients connect. Use only during planned tests.
+
+If nftables sets inet filter test_tcp and test_udp exist, the chosen port is
+added for the lifetime of this process and removed on EXIT/INT/TERM. A SIGKILL
+or abrupt power loss will not run cleanup; remove the port manually if needed:
+  sudo nft delete element inet filter test_tcp "{ PORT }"
+  sudo nft delete element inet filter test_udp "{ PORT }"
+
+If the sets are absent, no firewall changes are made.
+
+Usage:
+  testsrv [-p PORT]
+
+Options:
+  -p PORT       Listen port (default: 5201)
+  -h, --help    Show this help
+
+Client examples:
+  testcli <host>
+  testcli -u -b 5M <host>
+  # or: iperf3 -c <host> -p 5201 -t 30
+
+Exit codes:
+  0  iperf3 exited normally
+  1  usage, dependency, or firewall error
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":p:h" opt; do
+  case "$opt" in
+    p) PORT=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
+require_cmd iperf3
+
+nft_sets_present() {
+  command -v nft >/dev/null 2>&1 || return 1
+  nft list set inet filter test_tcp >/dev/null 2>&1 \
+    && nft list set inet filter test_udp >/dev/null 2>&1
+}
+
+open_port() {
+  if ! nft_sets_present; then
+    echo "warning: nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2
+    return 0
+  fi
+  if [[ "$(id -u)" -ne 0 ]]; then
+    die "root privileges required to modify nftables sets; re-run with sudo"
+  fi
+  if ! nft add element inet filter test_tcp "{ ${PORT} }"; then
+    die "failed to add port ${PORT} to inet filter test_tcp"
+  fi
+  if ! nft add element inet filter test_udp "{ ${PORT} }"; then
+    nft delete element inet filter test_tcp "{ ${PORT} }" 2>/dev/null || true
+    die "failed to add port ${PORT} to inet filter test_udp"
+  fi
+  NFT_OPENED=1
+  echo "firewall: port ${PORT} added to test_tcp/test_udp for process lifetime"
+}
+
+close_port() {
+  if [[ "$NFT_OPENED" -eq 1 ]]; then
+    nft delete element inet filter test_tcp "{ ${PORT} }" 2>/dev/null || true
+    nft delete element inet filter test_udp "{ ${PORT} }" 2>/dev/null || true
+    echo
+    echo "firewall: port ${PORT} removed from test_tcp/test_udp"
+  fi
+}
+
+trap close_port EXIT INT TERM
+
+open_port
+header testsrv
+echo "iperf3 listening on port ${PORT} (Ctrl-C to stop)"
+iperf3 -s -p "$PORT"

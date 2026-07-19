@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# udp-loss — measure UDP path loss using DNS queries that receive UDP replies
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+COUNT=100
+SERVERS=()
+
+usage() {
+  cat <<'EOF'
+udp-loss — measure UDP transit using DNS queries that elicit UDP replies.
+
+Counts a query as successful when a UDP reply is received (including error
+responses such as SERVFAIL/REFUSED). This distinguishes datagram delivery from
+ICMP port-unreachable rate limiting seen in mtr -u final-hop loss.
+
+Usage:
+  udp-loss [-c COUNT] [-s SERVER]...
+
+Options:
+  -c COUNT       Queries per server (default: 100)
+  -s SERVER      DNS server (repeatable; default: 1.1.1.1 and 9.9.9.9)
+  -h, --help     Show this help
+
+Interpretation:
+  Both clean            UDP replies received; treat isolated mtr -u final-hop
+                        loss as likely ICMP rate limiting unless corroborated
+  Both lossy            UDP loss or blocking in path
+  One lossy, one clean  Destination-specific handling, not a shared path issue
+
+Exit codes:
+  0  all servers <=1% loss
+  1  usage or dependency error
+  2  all servers >1% loss
+  3  divergent results across servers
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":c:s:h" opt; do
+  case "$opt" in
+    c) COUNT=$OPTARG ;;
+    s) SERVERS+=("$OPTARG") ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+is_uint "$COUNT" && [[ "$COUNT" -gt 0 ]] || die "invalid count: ${COUNT}"
+require_cmd dig awk sort
+
+if [[ ${#SERVERS[@]} -eq 0 ]]; then
+  SERVERS=(1.1.1.1 9.9.9.9)
+fi
+
+header udp-loss
+echo "count: ${COUNT}  servers: ${SERVERS[*]}"
+echo
+
+declare -a LOSS_PCTS=()
+
+for srv in "${SERVERS[@]}"; do
+  ok=0
+  fail=0
+  rtts=()
+  i=0
+  while (( i < COUNT )); do
+    t="$(dig @"$srv" cloudflare.com A +time=1 +tries=1 +stats 2>/dev/null \
+      | awk '/Query time:/ {print $4; exit}')"
+    if [[ -n "${t:-}" ]]; then
+      ok=$((ok + 1))
+      rtts+=("$t")
+    else
+      fail=$((fail + 1))
+    fi
+    i=$((i + 1))
+    if (( i % 25 == 0 || i == COUNT )); then
+      printf '\r%s: %d/%d' "$srv" "$i" "$COUNT" >&2
+    fi
+  done
+  printf '\r%s: %d/%d done\n' "$srv" "$COUNT" "$COUNT" >&2
+
+  loss="$(awk -v f="$fail" -v c="$COUNT" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
+  LOSS_PCTS+=("$loss")
+
+  if (( ok > 0 )); then
+    stats="$(printf '%s\n' "${rtts[@]}" | sort -n | awk '
+      { a[NR] = $1; s += $1 }
+      END {
+        if (NR < 1) { print "no replies"; exit }
+        p = int(NR * 0.95); if (p < 1) p = 1
+        printf "min %sms avg %.1fms p95 %sms max %sms", a[1], s / NR, a[p], a[NR]
+      }')"
+  else
+    stats="no replies"
+  fi
+
+  printf '%-16s sent %-4d ok %-4d lost %-3d (%s%%)  %s\n' \
+    "$srv" "$COUNT" "$ok" "$fail" "$loss" "$stats"
+done
+
+echo "--"
+lossy=0
+clean=0
+for p in "${LOSS_PCTS[@]}"; do
+  awk -v p="$p" 'BEGIN { exit !(p > 1.0) }' && lossy=$((lossy + 1)) || clean=$((clean + 1))
+done
+
+if (( lossy == 0 )); then
+  verdict "UDP replies received from all tested resolvers." \
+    "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
+  echo "finished: $(timestamp_local)"
+  exit 0
+elif (( clean == 0 )); then
+  verdict "UDP loss observed to all tested resolvers." \
+    "Investigate path policing, NAT state, or venue/ISP UDP handling."
+  echo "finished: $(timestamp_local)"
+  exit 2
+else
+  verdict "results diverge across resolvers." \
+    "Likely destination-specific handling rather than a shared path fault."
+  echo "finished: $(timestamp_local)"
+  exit 3
+fi

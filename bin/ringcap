@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# ringcap — rotating packet capture ring for intermittent symptoms
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+IFACE=""
+MB=20
+N=10
+FILT=""
+DIR=""
+SNAPLEN=96
+
+usage() {
+  cat <<'EOF'
+ringcap — leave a fixed-size rotating capture running until interrupted.
+
+When an intermittent symptom occurs, note the wall-clock time and inspect the
+matching file in the ring.
+
+Default snaplen is 96 (headers). Payloads are mostly omitted, but headers may
+still identify hosts. Increase snaplen only when required.
+
+Usage:
+  ringcap -d DIR [-i IFACE] [-s FILE_MB] [-n FILES] [-f 'bpf'] [-S SNAPLEN]
+
+Options:
+  -d DIR         Output directory (required)
+  -i IFACE       Capture interface (default: default-route iface)
+  -s FILE_MB     Size of each ring file in MB (default: 20)
+  -n FILES       Number of files in the ring (default: 10)
+  -f BPF         Optional BPF filter
+  -S SNAPLEN     Snapshot length in bytes (default: 96)
+  -h, --help     Show this help
+
+Requires root. Stop with Ctrl-C.
+Analysis hints: tcp.analysis.retransmission, tcp.analysis.duplicate_ack,
+icmp destination-unreachable.
+
+Exit codes:
+  0  tcpdump exited normally
+  1  usage, dependency, or permission error
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":i:s:n:d:f:S:h" opt; do
+  case "$opt" in
+    i) IFACE=$OPTARG ;;
+    s) MB=$OPTARG ;;
+    n) N=$OPTARG ;;
+    d) DIR=$OPTARG ;;
+    f) FILT=$OPTARG ;;
+    S) SNAPLEN=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+[[ -n "$DIR" ]] || die "output directory required (-d DIR)"
+is_uint "$MB" && [[ "$MB" -gt 0 ]] || die "invalid file size: ${MB}"
+is_uint "$N" && [[ "$N" -gt 0 ]] || die "invalid file count: ${N}"
+is_uint "$SNAPLEN" && [[ "$SNAPLEN" -gt 0 ]] || die "invalid snaplen: ${SNAPLEN}"
+IFACE="$(resolve_iface "${IFACE}")"
+require_cmd tcpdump
+require_root
+
+mkdir -p "$DIR"
+chmod 700 "$DIR" 2>/dev/null || true
+ABS_DIR="$(cd "$DIR" && pwd)"
+
+header ringcap
+echo "iface: ${IFACE}"
+echo "output: ${ABS_DIR}/cap-*.pcap  ring ${N}x${MB}MB  snaplen ${SNAPLEN}"
+echo "filter: ${FILT:-<none>}"
+echo "Note wall-clock time when the symptom occurs. Stop with Ctrl-C."
+
+cd "$ABS_DIR"
+if [[ -n "$FILT" ]]; then
+  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
+else
+  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
+fi

@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""dhcpprobe — discover DHCP servers on the local segment (DISCOVER only)."""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import random
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+
+from netpack import report  # noqa: E402
+from netpack.net import NetError, iface_is_up, require_root, resolve_iface  # noqa: E402
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_NONE = 2
+EXIT_MULTI = 3
+
+PARAM_REQUEST_LIST = [1, 3, 6, 15, 28, 51, 54, 58, 59, 119, 121]
+
+
+def _usage() -> str:
+    return """\
+dhcpprobe — broadcast DHCPDISCOVER and report every server that answers.
+
+Sends DHCPDISCOVER only (no REQUEST/ACK). Does not bind a lease.
+Generates broadcast traffic on the selected interface.
+
+Use the VLAN sub-interface when DHCP is tagged (for example eth0.100).
+Sniffing a trunk parent may miss VLAN-tagged offers.
+
+Some servers briefly reserve an offered address after DISCOVER; avoid rapid
+repeated runs against small pools.
+
+Usage:
+  dhcpprobe [-i IFACE] [-t SECONDS] [--dump FILE] [-v]
+
+Options:
+  -i, --iface IFACE   Interface (default: default-route iface)
+  -t, --timeout SEC   Listen window after DISCOVER (default: 5)
+  --dump FILE         Write JSON evidence to FILE
+  -v, --verbose       Diagnostics on stderr
+  -h, --help          Show this help
+
+Exit codes:
+  0  single DHCP server
+  1  usage, dependency, or permission error
+  2  no DHCP response
+  3  multiple DHCP servers
+"""
+
+
+def _mac_str(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return ":".join(f"{b:02x}" for b in raw[:6])
+    text = str(raw).replace("-", ":")
+    return text.lower()
+
+
+def _opt_ips(val: Any) -> list[str]:
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple)):
+        return [str(x) for x in val]
+    return [str(val)]
+
+
+def _opt_int(val: Any) -> int | None:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_str(val: Any) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
+
+
+def parse_offer(pkt: Any) -> dict[str, Any]:
+    from scapy.layers.dhcp import DHCP  # type: ignore
+    from scapy.layers.inet import IP  # type: ignore
+    from scapy.layers.l2 import Ether  # type: ignore
+
+    bootp = pkt.getlayer("BOOTP")
+    dhcp = pkt.getlayer(DHCP)
+    opts: dict[Any, Any] = {}
+    if dhcp is not None:
+        for item in dhcp.options:
+            if isinstance(item, tuple) and len(item) >= 2:
+                # Scapy multi-IP options are ("router", ip1, ip2, ...)
+                opts[item[0]] = item[1:] if len(item) > 2 else item[1]
+
+    yiaddr = getattr(bootp, "yiaddr", None)
+    offered = str(yiaddr) if yiaddr and str(yiaddr) != "0.0.0.0" else None
+
+    server_id = _opt_str(opts.get("server_id")) or (
+        str(pkt[IP].src) if pkt.haslayer(IP) else None
+    )
+    mask = _opt_str(opts.get("subnet_mask"))
+    cidr = None
+    if offered and mask:
+        try:
+            net = ipaddress.IPv4Network(f"{offered}/{mask}", strict=False)
+            cidr = f"{offered}/{net.prefixlen}"
+        except ValueError:
+            cidr = offered
+    elif offered:
+        cidr = offered
+
+    return {
+        "server_id": server_id,
+        "server_mac": _mac_str(pkt[Ether].src) if pkt.haslayer(Ether) else "",
+        "src_ip": str(pkt[IP].src) if pkt.haslayer(IP) else "",
+        "offered_ip": offered,
+        "offered_cidr": cidr,
+        "subnet_mask": mask,
+        "routers": _opt_ips(opts.get("router")),
+        "dns": _opt_ips(opts.get("name_server")),
+        "domain": _opt_str(opts.get("domain")),
+        "lease_seconds": _opt_int(opts.get("lease_time")),
+        "broadcast": _opt_str(opts.get("broadcast_address")),
+    }
+
+
+def build_discover(iface: str, mac: str):
+    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
+    from scapy.layers.inet import IP, UDP  # type: ignore
+    from scapy.layers.l2 import Ether  # type: ignore
+    from scapy.utils import mac2str  # type: ignore
+
+    xid = random.randint(1, 0xFFFFFFFF)
+    chaddr = mac2str(mac)
+    pkt = (
+        Ether(dst="ff:ff:ff:ff:ff:ff", src=mac)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=chaddr, xid=xid, flags=0x8000)
+        / DHCP(
+            options=[
+                ("message-type", "discover"),
+                ("param_req_list", PARAM_REQUEST_LIST),
+                ("client_id", b"\x01" + chaddr),
+                "end",
+            ]
+        )
+    )
+    return pkt, xid
+
+
+def iface_mac(iface: str) -> str:
+    path = Path(f"/sys/class/net/{iface}/address")
+    return path.read_text(encoding="utf-8").strip().lower()
+
+
+def collect_offers(iface: str, timeout: float, verbose: bool) -> list[dict[str, Any]]:
+    from scapy.layers.dhcp import DHCP  # type: ignore
+    from scapy.sendrecv import sendp, sniff  # type: ignore
+
+    mac = iface_mac(iface)
+    pkt, xid = build_discover(iface, mac)
+    offers: dict[str, dict[str, Any]] = {}
+
+    def is_offer(p: Any) -> bool:
+        if not p.haslayer(DHCP):
+            return False
+        bootp = p.getlayer("BOOTP")
+        if bootp is None or int(getattr(bootp, "xid", 0)) != xid:
+            return False
+        for item in p[DHCP].options:
+            if not isinstance(item, tuple) or item[0] != "message-type":
+                continue
+            if item[1] in (2, "offer"):
+                return True
+        return False
+
+    def on_started() -> None:
+        if verbose:
+            print(f"sending DHCPDISCOVER on {iface} xid=0x{xid:08x}", file=sys.stderr)
+        sendp(pkt, iface=iface, verbose=0)
+
+    # Arm sniff first; send DISCOVER from started_callback to avoid missing fast offers.
+    batch = sniff(
+        iface=iface,
+        filter="udp and (port 67 or port 68)",
+        timeout=timeout,
+        lfilter=is_offer,
+        store=True,
+        started_callback=on_started,
+    )
+    for p in batch:
+        parsed = parse_offer(p)
+        key = parsed.get("server_id") or parsed.get("server_mac") or parsed.get("src_ip")
+        if not key:
+            continue
+        offers[str(key)] = parsed
+        if verbose:
+            print(f"offer from {key}", file=sys.stderr)
+
+    return list(offers.values())
+
+
+def diff_offers(offers: list[dict[str, Any]]) -> list[str]:
+    if len(offers) < 2:
+        return []
+    fields = [
+        ("subnet_mask", "subnet_mask"),
+        ("routers", "gateway"),
+        ("dns", "dns"),
+        ("domain", "domain"),
+        ("lease_seconds", "lease"),
+    ]
+    lines: list[str] = []
+    for key, label in fields:
+        values = []
+        for o in offers:
+            val = o.get(key)
+            if isinstance(val, list):
+                values.append(", ".join(val) if val else "-")
+            elif val is None or val == "":
+                values.append("-")
+            else:
+                values.append(str(val))
+        if len(set(values)) > 1:
+            lines.append(f"  {label}: " + " | ".join(values))
+    return lines
+
+
+def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> None:
+    print(f"dhcpprobe — {report.timestamp_local()}")
+    print(f"iface: {iface}  timeout: {timeout:g}s")
+    if not iface_is_up(iface):
+        print("note: interface is administratively or operatively down")
+
+    report.section(f"OFFERS ({len(offers)})")
+    if not offers:
+        print("  (none)")
+    for i, o in enumerate(offers, 1):
+        print(
+            f"  [{i}] Server {o.get('server_id') or '-'}  "
+            f"MAC {o.get('server_mac') or '-'}"
+        )
+        print(f"      offered: {o.get('offered_cidr') or o.get('offered_ip') or '-'}")
+        gw = ", ".join(o.get("routers") or []) or "-"
+        dns = ", ".join(o.get("dns") or []) or "-"
+        lease = o.get("lease_seconds")
+        lease_s = f"{lease}s" if lease is not None else "-"
+        domain = o.get("domain") or "-"
+        print(f"      gateway: {gw}")
+        print(f"      dns: {dns}")
+        print(f"      lease: {lease_s}  domain: {domain}")
+
+    diffs = diff_offers(offers)
+    if diffs:
+        report.section("DIFFS")
+        for line in diffs:
+            print(line)
+
+    if len(offers) == 0:
+        report.verdict(
+            "no DHCP response. Server unreachable, wrong VLAN, or no scope on this segment.",
+            "Confirm interface/VLAN membership and that a DHCP service is expected here.",
+        )
+    elif len(offers) == 1:
+        report.verdict("single DHCP server responded.")
+    else:
+        report.verdict(
+            f"{len(offers)} DHCP servers responded on this segment.",
+            "Compare server identifiers and isolate unexpected responders.",
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-i", "--iface")
+    parser.add_argument("-t", "--timeout", type=float, default=5.0)
+    parser.add_argument("--dump")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.help:
+        print(_usage(), end="")
+        return EXIT_OK
+
+    if args.timeout <= 0:
+        print("error: timeout must be positive", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        require_root()
+        iface = resolve_iface(args.iface)
+    except NetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        import scapy  # noqa: F401
+    except ImportError:
+        print(
+            "error: scapy not installed (apt: python3-scapy, or pip install -r requirements.txt)",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    try:
+        from scapy.all import conf  # type: ignore
+
+        conf.verb = 0
+    except (ImportError, AttributeError):
+        if args.verbose:
+            print("warning: could not set scapy verbosity", file=sys.stderr)
+
+    try:
+        offers = collect_offers(iface, args.timeout, args.verbose)
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return EXIT_ERROR
+    except PermissionError:
+        print("error: permission denied sending/sniffing; re-run with sudo", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    print_report(iface, args.timeout, offers)
+
+    if args.dump:
+        payload = {
+            "tool": "dhcpprobe",
+            "iface": iface,
+            "timeout_s": args.timeout,
+            "offer_count": len(offers),
+            "offers": offers,
+            "verdict_code": (
+                EXIT_NONE if not offers else EXIT_OK if len(offers) == 1 else EXIT_MULTI
+            ),
+            "verdict": (
+                "none"
+                if not offers
+                else "single"
+                if len(offers) == 1
+                else "multiple"
+            ),
+        }
+        path = report.write_dump(args.dump, payload)
+        print(f"dump: {path}")
+
+    report.finished()
+    if not offers:
+        return EXIT_NONE
+    if len(offers) > 1:
+        return EXIT_MULTI
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

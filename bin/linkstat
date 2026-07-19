@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""linkstat — sample interface counters and classify physical vs congestion signals."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+
+from netpack import report  # noqa: E402
+from netpack.net import NetError, resolve_iface  # noqa: E402
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_PHYSICAL = 2
+EXIT_CONGESTION = 3
+EXIT_FLAP = 4
+
+COUNTERS = [
+    "rx_packets",
+    "tx_packets",
+    "rx_errors",
+    "tx_errors",
+    "rx_dropped",
+    "tx_dropped",
+    "rx_crc_errors",
+    "rx_fifo_errors",
+    "tx_fifo_errors",
+    "collisions",
+]
+
+ERROR_KEYS = {
+    "rx_errors",
+    "tx_errors",
+    "rx_crc_errors",
+    "collisions",
+}
+DROP_KEYS = {
+    "rx_dropped",
+    "tx_dropped",
+    "rx_fifo_errors",
+    "tx_fifo_errors",
+}
+
+
+def _usage() -> str:
+    return """\
+linkstat — sample interface counters over an interval and classify growth.
+
+Read-only. Does not generate traffic.
+
+  errors / crc / collisions growing  -> physical layer (cable, NIC, duplex)
+  dropped / fifo growing             -> congestion, buffering, or policy
+  carrier_changes growing            -> link flaps (ethernet); informational on Wi-Fi
+
+Usage:
+  linkstat [-i IFACE] [-t SECONDS] [--dump FILE]
+
+Options:
+  -i, --iface IFACE   Interface (default: default-route iface)
+  -t, --timeout SEC   Sample window in seconds (default: 10)
+  --dump FILE         Write JSON evidence to FILE
+  -h, --help          Show this help
+
+Exit codes:
+  0  no error or drop growth
+  1  usage or interface error
+  2  physical-layer counter growth
+  3  congestion/drop counter growth
+  4  ethernet carrier flaps (without error growth)
+"""
+
+
+def read_counter(iface: str, name: str) -> int:
+    path = Path(f"/sys/class/net/{iface}/statistics/{name}")
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return 0
+
+
+def snap_counters(iface: str) -> dict[str, int]:
+    return {name: read_counter(iface, name) for name in COUNTERS}
+
+
+def read_carrier_changes(iface: str) -> int:
+    path = Path(f"/sys/class/net/{iface}/carrier_changes")
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return 0
+
+
+def is_wireless(iface: str) -> bool:
+    return Path(f"/sys/class/net/{iface}/wireless").is_dir() or iface.startswith(
+        ("wlan", "wlp", "wlx")
+    )
+
+
+def link_info(iface: str) -> dict[str, str]:
+    info: dict[str, str] = {}
+    if is_wireless(iface):
+        if not _have("iw"):
+            info["note"] = "iw not installed"
+            return info
+        try:
+            out = subprocess.check_output(
+                ["iw", "dev", iface, "link"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            info["note"] = "iw link query failed"
+            return info
+        for line in out.splitlines():
+            s = line.strip()
+            low = s.lower()
+            if low.startswith("ssid:"):
+                info["ssid"] = s.split(":", 1)[1].strip()
+            elif "freq:" in low:
+                info["freq"] = s
+            elif "signal:" in low:
+                info["signal"] = s
+            elif "tx bitrate:" in low or "bitrate:" in low:
+                info["bitrate"] = s
+        return info
+
+    if not _have("ethtool"):
+        info["note"] = "ethtool not installed"
+        return info
+    try:
+        out = subprocess.check_output(
+            ["ethtool", iface],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        info["note"] = "ethtool query failed"
+        return info
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("Speed:"):
+            info["speed"] = s.split(":", 1)[1].strip()
+        elif s.startswith("Duplex:"):
+            info["duplex"] = s.split(":", 1)[1].strip()
+        elif s.startswith("Link detected:"):
+            info["link_detected"] = s.split(":", 1)[1].strip()
+    return info
+
+
+def _have(cmd: str) -> bool:
+    from shutil import which
+
+    return which(cmd) is not None
+
+
+def print_report(
+    iface: str,
+    timeout: float,
+    deltas: dict[str, int],
+    flaps: int,
+    info: dict[str, str],
+    wireless: bool,
+) -> int:
+    print(f"linkstat — {report.timestamp_local()}")
+    print(f"iface: {iface}  sample: {timeout:g}s")
+
+    report.section("LINK")
+    if info:
+        for key, val in info.items():
+            print(f"  {key}: {val}")
+    else:
+        print("  (no link details available)")
+
+    report.section("COUNTER DELTAS")
+    print(f"  {'counter':<16} {'delta':>12}")
+    err = 0
+    drp = 0
+    for name in COUNTERS:
+        d = max(0, deltas[name])  # ignore wrap/teardown negatives
+        print(f"  {name:<16} {deltas[name]:12d}")
+        if name in ERROR_KEYS:
+            err += d
+        if name in DROP_KEYS:
+            drp += d
+
+    if flaps > 0:
+        label = "carrier_changes (wifi; informational)" if wireless else "carrier_changes"
+        print(f"  {label:<16} {flaps:12d}")
+
+    notes: list[str] = []
+    if err > 0 and drp > 0:
+        notes.append("drop/fifo counters also increased")
+    if err > 0 and flaps > 0 and not wireless:
+        notes.append(f"carrier also flapped {flaps} time(s)")
+    if drp > 0 and flaps > 0 and not wireless and err == 0:
+        notes.append(f"carrier also flapped {flaps} time(s)")
+
+    if err > 0:
+        msg = "error counters increased during the sample (physical layer)."
+        if notes:
+            msg = f"{msg} Also: {'; '.join(notes)}."
+        report.verdict(
+            msg,
+            "Inspect cabling, connectors, NIC, and duplex negotiation.",
+        )
+        return EXIT_PHYSICAL
+
+    # Wi-Fi carrier_changes often move on roam/reassoc; do not treat as flap fault.
+    if flaps > 0 and not wireless:
+        msg = f"carrier flapped {flaps} time(s) during the sample."
+        if notes:
+            msg = f"{msg} Also: {'; '.join(notes)}."
+        report.verdict(
+            msg,
+            "Inspect link stability (cable, SFP, switch port, power).",
+        )
+        return EXIT_FLAP
+
+    if flaps > 0 and wireless:
+        print(
+            f"note: carrier_changes increased by {flaps} on a wireless interface "
+            "(often roam/reassoc; not classified as a flap fault)."
+        )
+
+    if drp > 0:
+        msg = "drop/fifo counters increased during the sample (congestion or policy)."
+        if notes:
+            msg = f"{msg} Also: {'; '.join(notes)}."
+        report.verdict(
+            msg,
+            "Check buffer pressure, QoS, and burst load on this port.",
+        )
+        return EXIT_CONGESTION
+
+    report.verdict(
+        "no error or drop growth during the sample window.",
+        "Re-run while the symptom is present.",
+    )
+    return EXIT_OK
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-i", "--iface")
+    parser.add_argument("-t", "--timeout", type=float, default=10.0)
+    parser.add_argument("--dump")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.help:
+        print(_usage(), end="")
+        return EXIT_OK
+
+    if args.timeout <= 0:
+        print("error: timeout must be positive", file=sys.stderr)
+        return EXIT_ERROR
+
+    try:
+        iface = resolve_iface(args.iface)
+    except NetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    stats_dir = Path(f"/sys/class/net/{iface}/statistics")
+    if not stats_dir.is_dir():
+        print(f"error: statistics not available for {iface}", file=sys.stderr)
+        return EXIT_ERROR
+
+    wireless = is_wireless(iface)
+    info = link_info(iface)
+    before = snap_counters(iface)
+    carrier_before = read_carrier_changes(iface)
+    print(f"sampling {args.timeout:g}s on {iface} ...")
+    try:
+        time.sleep(args.timeout)
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return EXIT_ERROR
+    after = snap_counters(iface)
+    carrier_after = read_carrier_changes(iface)
+    deltas = {k: after[k] - before[k] for k in COUNTERS}
+    flaps = max(0, carrier_after - carrier_before)
+
+    code = print_report(iface, args.timeout, deltas, flaps, info, wireless)
+
+    if args.dump:
+        payload: dict[str, Any] = {
+            "tool": "linkstat",
+            "iface": iface,
+            "timeout_s": args.timeout,
+            "wireless": wireless,
+            "link": info,
+            "before": before,
+            "after": after,
+            "deltas": deltas,
+            "carrier_changes_delta": flaps,
+            "verdict_code": code,
+        }
+        path = report.write_dump(args.dump, payload)
+        print(f"dump: {path}")
+
+    report.finished()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

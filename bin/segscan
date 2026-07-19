@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# segscan — segment inventory for an unfamiliar link
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+usage() {
+  cat <<'EOF'
+segscan — inventory the local segment (interface, LLDP, gateway, ARP).
+
+Performs an active ARP sweep of the local subnet (arp-scan --localnet).
+Requires root for arp-scan and typically for LLDP neighbor queries.
+
+Large prefixes generate substantial broadcast traffic. Sweeps larger than /22
+(1024 addresses) require -y to confirm.
+
+Usage:
+  segscan [IFACE]
+  segscan [-i IFACE] [-y]
+
+Options:
+  -i IFACE      Interface (default: default-route iface)
+  -y            Confirm ARP sweep on prefixes larger than /22
+  -h, --help    Show this help
+
+Exit codes:
+  0  inventory completed (sweep may be skipped if noted)
+  1  usage, dependency, or refused large sweep
+  2  duplicate IP addresses detected
+EOF
+}
+
+IFACE=""
+CONFIRM_LARGE=0
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":i:yh" opt; do
+  case "$opt" in
+    i) IFACE=$OPTARG ;;
+    y) CONFIRM_LARGE=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+if [[ -n "${1:-}" ]]; then
+  IFACE=$1
+fi
+
+IFACE="$(resolve_iface "${IFACE}")"
+require_cmd ip
+
+header segscan
+echo "iface: ${IFACE}"
+echo
+echo "=== interface ==="
+ip -br addr show dev "$IFACE" || true
+
+echo
+echo "=== LLDP neighbor ==="
+if command -v lldpcli >/dev/null 2>&1; then
+  if out="$(lldpcli show neighbors summary 2>/dev/null)"; then
+    filtered="$(printf '%s\n' "$out" | grep -E 'SysName|PortID|PortDescr|MgmtIP|Interface' || true)"
+    if [[ -n "$filtered" ]]; then
+      printf '%s\n' "$filtered"
+    else
+      echo "  no LLDP neighbor seen (unmanaged device in path, or LLDP disabled)"
+    fi
+  else
+    echo "  lldpcli query failed (root or lldpd may be required)"
+  fi
+else
+  echo "  lldpd/lldpcli not installed"
+fi
+
+echo
+echo "=== default gateway ==="
+require_cmd ping
+GW="$(default_gateway)"
+if [[ -n "$GW" ]]; then
+  echo "  gateway: ${GW}"
+  ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
+  ip neigh show "$GW" 2>/dev/null || true
+else
+  echo "  no default gateway"
+fi
+
+echo
+echo "=== ARP sweep ==="
+SWEEP_DIR="$(private_tmpdir segscan)"
+SWEEP="${SWEEP_DIR}/arp.txt"
+cleanup() { rm -rf "$SWEEP_DIR"; }
+trap cleanup EXIT
+
+iface_prefixlen() {
+  ip -o -4 addr show dev "$IFACE" 2>/dev/null \
+    | awk '{
+        for (i = 1; i <= NF; i++) {
+          if ($i == "inet") {
+            split($(i + 1), a, "/")
+            if (a[2] != "") { print a[2]; exit }
+          }
+        }
+      }'
+}
+
+PREFIX="$(iface_prefixlen || true)"
+if [[ -n "$PREFIX" ]] && is_uint "$PREFIX"; then
+  # hosts in subnet approx 2^(32-prefix) excluding extremes; use address count 2^(32-p)
+  if (( PREFIX < 22 )); then
+    HOSTS=$((1 << (32 - PREFIX)))
+    echo "  interface prefix /${PREFIX} (~${HOSTS} addresses)"
+    if [[ "$CONFIRM_LARGE" -ne 1 ]]; then
+      die "ARP sweep of /${PREFIX} may disrupt a live segment; re-run with -y to confirm"
+    fi
+    echo "  large sweep confirmed with -y"
+  fi
+fi
+
+if ! command -v arp-scan >/dev/null 2>&1; then
+  echo "  arp-scan not installed"
+  echo
+  echo "=== duplicate IPs ==="
+  echo "  skipped (no sweep data)"
+  echo "finished: $(timestamp_local)"
+  exit 0
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "  arp-scan requires root; re-run with sudo for the sweep"
+  echo
+  echo "=== duplicate IPs ==="
+  echo "  skipped (no sweep data)"
+  echo "finished: $(timestamp_local)"
+  exit 0
+fi
+
+arp-scan --interface="$IFACE" --localnet --retry=2 2>/dev/null \
+  | tee "$SWEEP" \
+  | tail -n +3 || true
+
+echo
+echo "=== duplicate IPs ==="
+DUP_EXIT=0
+if [[ -s "$SWEEP" ]]; then
+  dups="$(awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]/{print $1}' "$SWEEP" \
+    | sort | uniq -d || true)"
+  if [[ -z "$dups" ]]; then
+    echo "  none"
+  else
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] || continue
+      echo "  DUPLICATE: ${ip}"
+      grep -E "^${ip}[[:space:]]" "$SWEEP" | sed 's/^/    /' || true
+      DUP_EXIT=2
+    done <<<"$dups"
+  fi
+else
+  echo "  skipped (no sweep data)"
+fi
+
+echo "finished: $(timestamp_local)"
+exit "$DUP_EXIT"

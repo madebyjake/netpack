@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# mtucheck — probe path MTU to gateway and a WAN target
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+WAN=1.1.1.1
+MAX=1500
+MIN=68
+
+usage() {
+  cat <<'EOF'
+mtucheck — find the largest ICMP payload that reaches gateway and WAN without fragmentation.
+
+Detects classic path MTU black holes (small pings work; large transfers stall).
+Uses ping Do-Not-Fragment probes. Low traffic; safe for planned field checks.
+
+Usage:
+  mtucheck [-w WAN_TARGET] [-m MAX_SIZE]
+
+Options:
+  -w WAN_TARGET   WAN ICMP target (default: 1.1.1.1)
+  -m MAX_SIZE     Maximum total IP size to test (default: 1500)
+  -h, --help      Show this help
+
+Exit codes:
+  0  gateway and WAN support a full-size path near MAX
+  1  usage, dependency, or probe error
+  2  reduced MTU detected on gateway or WAN path
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":w:m:h" opt; do
+  case "$opt" in
+    w) WAN=$OPTARG ;;
+    m) MAX=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+is_uint "$MAX" && [[ "$MAX" -ge 100 ]] || die "invalid max size: ${MAX}"
+require_cmd ping ip awk
+
+GW="$(default_gateway)"
+[[ -n "$GW" ]] || die "no default gateway"
+
+# Linux ping: -M do (DF), -s payload size. IP+ICMP headers ≈ 28 bytes for IPv4.
+# Working total size ≈ payload + 28.
+ping_df() {
+  local host=$1
+  local payload=$2
+  ping -c1 -W1 -M do -s "$payload" "$host" >/dev/null 2>&1
+}
+
+largest_ok() {
+  local host=$1
+  local lo=$MIN
+  local hi=$((MAX - 28))
+  local best=0 mid
+  if (( hi < lo )); then
+    hi=$lo
+  fi
+  # Confirm small size works
+  if ! ping_df "$host" "$lo"; then
+    echo "0"
+    return 1
+  fi
+  best=$lo
+  while (( lo <= hi )); do
+    mid=$(( (lo + hi) / 2 ))
+    if ping_df "$host" "$mid"; then
+      best=$mid
+      lo=$((mid + 1))
+    else
+      hi=$((mid - 1))
+    fi
+  done
+  echo "$best"
+}
+
+header mtucheck
+echo "max: ${MAX}  gateway: ${GW}  wan: ${WAN}"
+echo
+
+if command -v tracepath >/dev/null 2>&1; then
+  echo "=== tracepath (informational) ==="
+  tracepath -n "$GW" 2>/dev/null | tail -n 5 || true
+  echo
+  tracepath -n "$WAN" 2>/dev/null | tail -n 5 || true
+  echo
+fi
+
+echo "=== DF ping binary search ==="
+gw_payload="$(largest_ok "$GW")" || true
+wan_payload="$(largest_ok "$WAN")" || true
+
+gw_total=0
+wan_total=0
+if [[ -n "${gw_payload:-}" && "$gw_payload" != "0" ]]; then
+  gw_total=$((gw_payload + 28))
+fi
+if [[ -n "${wan_payload:-}" && "$wan_payload" != "0" ]]; then
+  wan_total=$((wan_payload + 28))
+fi
+
+printf 'gateway (%s): largest OK payload %s (approx IP size %s)\n' \
+  "$GW" "${gw_payload:-0}" "${gw_total}"
+printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
+  "$WAN" "${wan_payload:-0}" "${wan_total}"
+
+threshold=$((MAX - 40))
+# Expect near-full size; allow small header/tunnel slack
+reduced=0
+if (( gw_total < threshold || wan_total < threshold || gw_total == 0 || wan_total == 0 )); then
+  reduced=1
+fi
+
+if (( gw_total == 0 && wan_total == 0 )); then
+  die "DF probes failed to gateway and WAN (ICMP blocked or no route)"
+fi
+
+if (( reduced )); then
+  verdict "reduced path MTU detected (or ICMP DF probes blocked beyond a size)." \
+    "Check tunnels, PPPoE, and firewall DF handling; compare gateway vs WAN sizes."
+  echo "finished: $(timestamp_local)"
+  exit 2
+fi
+verdict "gateway and WAN accepted near-full-size DF probes."
+echo "finished: $(timestamp_local)"
+exit 0
