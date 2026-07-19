@@ -191,13 +191,14 @@ run_tool_from_menu() {
 
 menu() {
   local i=1 t sel tag
-  local c_amber='' c_bold='' c_dim='' c_off=''
+  local c_amber='' c_bold='' c_sudo='' c_root='' c_off=''
   local -a numbered=()
-  # Amber hierarchy when stdout is a TTY; honor NO_COLOR.
+  # Amber heading, dim sudo tags, red when root; honor NO_COLOR / non-TTY.
   if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     c_amber=$'\033[38;5;214m'
-    c_bold=$'\033[1;38;5;214m'
-    c_dim=$'\033[2;38;5;214m'
+    c_bold=$'\033[1m'
+    c_sudo=$'\033[2m'
+    c_root=$'\033[31m'
     c_off=$'\033[0m'
   fi
   printf '%s' "$c_amber"
@@ -218,30 +219,30 @@ EOF
     [[ "$t" == doctor ]] && continue
     numbered+=("$t")
     tag="$(sudo_tag "$t")"
-    printf "  %s%2d)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
-      "$c_amber" "$i" "$c_off" \
+    printf "  %2d) %s%-10s%s  %s%-6s%s    %s\n" \
+      "$i" \
       "$c_bold" "$t" "$c_off" \
-      "$c_dim" "$tag" "$c_off" \
-      "$c_amber" "$(describe "$t")" "$c_off"
+      "$c_sudo" "$tag" "$c_off" \
+      "$(describe "$t")"
     i=$((i + 1))
   done
   echo
-  printf "  %s%2s)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
-    "$c_amber" d "$c_off" \
+  printf "  %2s) %s%-10s%s  %s%-6s%s    %s\n" \
+    d \
     "$c_bold" "doctor" "$c_off" \
-    "$c_dim" "" "$c_off" \
-    "$c_amber" "$(describe doctor)" "$c_off"
-  printf "  %s%2s)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
-    "$c_amber" q "$c_off" \
+    "$c_sudo" "" "$c_off" \
+    "$(describe doctor)"
+  printf "  %2s) %s%-10s%s  %s%-6s%s    %s\n" \
+    q \
     "$c_bold" "quit" "$c_off" \
-    "$c_dim" "" "$c_off" \
-    "$c_amber" "Exit" "$c_off"
+    "$c_sudo" "" "$c_off" \
+    "Exit"
   echo
-  local note="  [sudo] needs root"
-  if [[ "$(id -u)" -ne 0 ]]; then
-    note+=" (you are not root)"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    printf '%s%s%s\n' "$c_root" "  running as root" "$c_off"
+  else
+    printf '%s%s%s\n' "$c_sudo" "  [sudo] needs root (you are not root)" "$c_off"
   fi
-  printf '%s%s%s\n' "$c_dim" "$note" "$c_off"
   echo
   printf '%s  Select option (q to quit): %s' "$c_amber" "$c_off"
   if ! read -r sel; then
