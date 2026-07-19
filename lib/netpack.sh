@@ -12,6 +12,17 @@ netpack_bin() {
   echo "$(netpack_root)/bin"
 }
 
+# Single source of truth for the version is lib/netpack/__init__.py.
+netpack_version() {
+  local init
+  init="$(netpack_root)/lib/netpack/__init__.py"
+  if [[ -f "$init" ]]; then
+    sed -n 's/^__version__ = "\(.*\)"/\1/p' "$init" | head -1
+  else
+    echo "unknown"
+  fi
+}
+
 die() {
   echo "error: $*" >&2
   exit 1
