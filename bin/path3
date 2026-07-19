@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 COUNT=50
 PORT=443
@@ -15,7 +17,8 @@ usage() {
 path3 — run mtr against a target in ICMP, UDP, and TCP modes.
 
 Compares final-hop loss across protocols. Probe volume is COUNT x 3 modes.
-Requires root (CAP_NET_RAW) for reliable UDP/TCP modes on Debian.
+Tries unprivileged first; if a mode fails (common without CAP_NET_RAW on
+UDP/TCP), re-run with sudo.
 
 Usage:
   path3 [-c COUNT] [-p TCP_PORT] TARGET
@@ -55,7 +58,6 @@ TARGET=${1:-}
 is_uint "$COUNT" && [[ "$COUNT" -gt 0 ]] || die "invalid count: ${COUNT}"
 is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
 require_cmd mtr awk
-require_root
 
 header path3
 echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}"
@@ -89,28 +91,6 @@ run_mode icmp
 run_mode udp -u
 run_mode tcp -T -P "$PORT"
 
-summarize_final() {
-  local file=$1
-  awk '
-    BEGIN { host = "-"; loss = "-"; avg = "-" }
-    /^HOST:/ { next }
-    NF < 3 { next }
-    {
-      h = $2
-      gsub(/^\.?\|--/, "", h)
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /%$/) {
-          host = h
-          loss = $i
-          if ((i + 3) <= NF) avg = $(i + 3) "ms"
-          break
-        }
-      }
-    }
-    END { printf "%s\t%s\t%s\n", host, loss, avg }
-  ' "$file"
-}
-
 echo "=== final-hop summary ==="
 printf '%-5s %-40s %-10s %s\n' "mode" "host" "loss" "avg"
 for m in icmp udp tcp; do
@@ -131,5 +111,8 @@ EOF
 
 echo "finished: $(timestamp_local)"
 if (( FAILED_MODES > 0 )); then
+  if [[ "$(id -u)" -ne 0 ]]; then
+    die "${FAILED_MODES} mtr mode(s) failed; re-run with sudo (CAP_NET_RAW may be required)"
+  fi
   die "${FAILED_MODES} mtr mode(s) failed or produced unusable output"
 fi
