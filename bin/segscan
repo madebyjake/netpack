@@ -149,8 +149,20 @@ echo
 echo "=== duplicate IPs ==="
 DUP_EXIT=0
 if [[ -s "$SWEEP" ]]; then
-  dups="$(awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]/{print $1}' "$SWEEP" \
-    | sort | uniq -d || true)"
+  # arp-scan retries print (DUP: n) for the same IP+MAC; only flag real
+  # conflicts (same IP, ≥2 distinct MACs).
+  dups="$(awk '
+    /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]/ {
+      ip=$1; mac=tolower($2)
+      if (!(ip SUBSEP mac in seen)) {
+        seen[ip SUBSEP mac]=1
+        macs[ip]++
+      }
+    }
+    END {
+      for (ip in macs) if (macs[ip] >= 2) print ip
+    }
+  ' "$SWEEP" | sort || true)"
   if [[ -z "$dups" ]]; then
     echo "  none"
   else
