@@ -67,24 +67,24 @@ probe() {
   local body="${DIR}/body" out status redirect got_body
   echo "${url}"
   if ! out="$(curl -4 -s -m "$TIMEOUT" -o "$body" -w '%{http_code}\t%{redirect_url}' "$url")"; then
-    echo "  no response (connect failure, DNS failure, or timeout)"
+    echo "  $(color_status bad "no response (connect failure, DNS failure, or timeout)")"
     FAILED=$((FAILED + 1))
     return
   fi
   IFS=$'\t' read -r status redirect <<<"$out"
   got_body="$(tr -d '[:space:]' < "$body")"
   if [[ "$status" == "$want_status" && "$got_body" == "$want_body" ]]; then
-    echo "  status ${status}  OK"
+    echo "  status ${status}  $(color_status ok)"
     return
   fi
   if [[ "$status" != "$want_status" ]]; then
     if [[ -n "$redirect" ]]; then
-      echo "  status ${status}  REDIRECT -> ${redirect}"
+      echo "  status ${status}  $(color_status warn "REDIRECT -> ${redirect}")"
     else
-      echo "  status ${status}  UNEXPECTED (expected ${want_status})"
+      echo "  status ${status}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
     fi
   else
-    echo "  status ${status}  UNEXPECTED BODY (interception suspected)"
+    echo "  status ${status}  $(color_status warn "UNEXPECTED BODY (interception suspected)")"
   fi
   UNEXPECTED=$((UNEXPECTED + 1))
 }
