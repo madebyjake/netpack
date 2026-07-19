@@ -28,7 +28,7 @@ Usage:
 Options:
   -t SECONDS       Test duration (default: 60)
   -w WAN_TARGET    WAN ICMP target (default: 1.1.1.1)
-  -d DIR           Keep timestamped logs in DIR (created if needed)
+  -d DIR           Keep logs in DIR (timestamped filenames; created if needed)
   -h, --help       Show this help
 
 Without -d, logs are written under a private temp directory and removed on exit
@@ -70,8 +70,10 @@ else
   DIR="$(private_tmpdir splitloss)"
 fi
 
-LOG_GW="${DIR}/gw.log"
-LOG_WAN="${DIR}/wan.log"
+# Per-run filenames so repeat runs into the same -d DIR never clobber evidence.
+STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG_GW="${DIR}/gw-${STAMP}.log"
+LOG_WAN="${DIR}/wan-${STAMP}.log"
 
 cleanup() {
   if [[ "${CLEAN_TMP:-0}" -eq 1 && "$KEEP_LOGS" -eq 0 && -n "${DIR:-}" && -d "$DIR" ]]; then
