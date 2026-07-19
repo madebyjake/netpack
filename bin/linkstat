@@ -35,6 +35,8 @@ COUNTERS = [
     "collisions",
 ]
 
+BYTE_COUNTERS = ["rx_bytes", "tx_bytes"]
+
 ERROR_KEYS = {
     "rx_errors",
     "tx_errors",
@@ -53,7 +55,9 @@ def _usage() -> str:
     return """\
 linkstat — sample interface counters over an interval and classify growth.
 
-Read-only. Does not generate traffic.
+Read-only. Does not generate traffic. Also reports rx/tx utilization over the
+window so drop growth can be read against load (drops under load suggest
+congestion; drops while idle suggest policy or misconfiguration).
 
   errors / crc / collisions growing  -> physical layer (cable, NIC, duplex)
   dropped / fifo growing             -> congestion, buffering, or policy
@@ -87,6 +91,14 @@ def read_counter(iface: str, name: str) -> int:
 
 def snap_counters(iface: str) -> dict[str, int]:
     return {name: read_counter(iface, name) for name in COUNTERS}
+
+
+def snap_bytes(iface: str) -> dict[str, int]:
+    return {name: read_counter(iface, name) for name in BYTE_COUNTERS}
+
+
+def mbit_s(byte_delta: int, seconds: float) -> float:
+    return byte_delta * 8 / seconds / 1e6
 
 
 def read_carrier_changes(iface: str) -> int:
@@ -164,6 +176,7 @@ def print_report(
     iface: str,
     timeout: float,
     deltas: dict[str, int],
+    byte_deltas: dict[str, int],
     flaps: int,
     info: dict[str, str],
     wireless: bool,
@@ -177,6 +190,14 @@ def print_report(
             print(f"  {key}: {val}")
     else:
         print("  (no link details available)")
+
+    report.section("UTILIZATION")
+    for name in BYTE_COUNTERS:
+        label = name.split("_")[0]
+        print(
+            f"  {label}: {mbit_s(byte_deltas[name], timeout):.2f} Mbit/s "
+            f"({byte_deltas[name] / 1e6:.1f} MB)"
+        )
 
     report.section("COUNTER DELTAS")
     print(f"  {'counter':<16} {'delta':>12}")
@@ -276,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     wireless = is_wireless(iface)
     info = link_info(iface)
     before = snap_counters(iface)
+    bytes_before = snap_bytes(iface)
     carrier_before = read_carrier_changes(iface)
     print(f"sampling {args.timeout:g}s on {iface} ...")
     try:
@@ -284,11 +306,13 @@ def main(argv: list[str] | None = None) -> int:
         print("error: interrupted", file=sys.stderr)
         return EXIT_ERROR
     after = snap_counters(iface)
+    bytes_after = snap_bytes(iface)
     carrier_after = read_carrier_changes(iface)
     deltas = {k: after[k] - before[k] for k in COUNTERS}
+    byte_deltas = {k: max(0, bytes_after[k] - bytes_before[k]) for k in BYTE_COUNTERS}
     flaps = max(0, carrier_after - carrier_before)
 
-    code = print_report(iface, args.timeout, deltas, flaps, info, wireless)
+    code = print_report(iface, args.timeout, deltas, byte_deltas, flaps, info, wireless)
 
     if args.dump:
         payload: dict[str, Any] = {
@@ -300,6 +324,11 @@ def main(argv: list[str] | None = None) -> int:
             "before": before,
             "after": after,
             "deltas": deltas,
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_after,
+            "byte_deltas": byte_deltas,
+            "rx_mbit_s": round(mbit_s(byte_deltas["rx_bytes"], args.timeout), 3),
+            "tx_mbit_s": round(mbit_s(byte_deltas["tx_bytes"], args.timeout), 3),
             "carrier_changes_delta": flaps,
             "verdict_code": code,
         }
