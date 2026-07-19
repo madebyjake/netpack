@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 T=60
 WAN=1.1.1.1
@@ -101,15 +103,6 @@ if (( RC1 >= 2 || RC2 >= 2 )); then
   die "ping failed (gateway exit ${RC1}, wan exit ${RC2})"
 fi
 
-loss_pct() {
-  local file=$1 pct
-  pct="$(grep -Eo '[0-9]+% packet loss' "$file" 2>/dev/null | head -1 | tr -dc '0-9')"
-  if [[ -z "$pct" ]]; then
-    return 1
-  fi
-  echo "$pct"
-}
-
 gl="$(loss_pct "$LOG_GW")" || {
   echo "logs retained: ${DIR}" >&2
   die "could not parse gateway ping summary in ${LOG_GW}"
@@ -132,12 +125,12 @@ CLEAN_TMP=1
 
 finish() { echo "finished: $(timestamp_local)"; }
 
-if (( gl > 1 )); then
+if awk -v p="$gl" 'BEGIN { exit !(p > 1) }'; then
   verdict "loss to gateway indicates an access-layer problem." \
     "Inspect local switch/AP, cabling, and the gateway path."
   finish
   exit 2
-elif (( wl > 1 )); then
+elif awk -v p="$wl" 'BEGIN { exit !(p > 1) }'; then
   verdict "gateway is clean; WAN path shows loss." \
     "Inspect uplink, venue circuit, and upstream path evidence."
   finish
