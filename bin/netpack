@@ -11,18 +11,19 @@ if command -v readlink >/dev/null 2>&1; then
 fi
 
 TOOLS=(
-  doctor
   dhcpprobe
   linkstat
   segscan
   splitloss
   dnscheck
+  webcheck
   mtucheck
   path3
   udp-loss
   ringcap
   testsrv
   testcli
+  doctor
 )
 
 describe() {
@@ -33,6 +34,7 @@ describe() {
     segscan)   echo "Segment inventory (LLDP, gateway, ARP)" ;;
     splitloss) echo "Concurrent gateway vs WAN loss comparison" ;;
     dnscheck)  echo "Configured vs public DNS resolver comparison" ;;
+    webcheck)  echo "Captive portal / HTTP interception check" ;;
     mtucheck)  echo "Path MTU probe to gateway and WAN" ;;
     path3)     echo "mtr over ICMP, UDP, and TCP" ;;
     udp-loss)  echo "UDP loss via DNS queries with real replies" ;;
@@ -42,6 +44,25 @@ describe() {
     *)         echo "" ;;
   esac
 }
+
+# Tools that require (or commonly require) root; tagged in menu and list.
+sudo_tag() {
+  case "$1" in
+    dhcpprobe|segscan|path3|ringcap|testsrv) echo "[sudo]" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Tools that cannot do anything useful without root (subset of sudo_tag).
+needs_root() {
+  case "$1" in
+    dhcpprobe|ringcap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Set to (sudo) by the menu flow; empty for direct invocation.
+RUN_PREFIX=()
 
 netpack_version() {
   local init="${ROOT}/../lib/netpack/__init__.py"
@@ -70,9 +91,11 @@ Also available as: netpack | npk
 Tools:
 EOF
   for t in "${TOOLS[@]}"; do
-    printf "  %-10s  %s\n" "$t" "$(describe "$t")"
+    printf "  %-10s  %-6s  %s\n" "$t" "$(sudo_tag "$t")" "$(describe "$t")"
   done
   cat <<'EOF'
+
+[sudo] marks tools that need root for some or all operations.
 
 Options:
   -h, --help, help     Show this help
@@ -88,7 +111,7 @@ list_tools() {
   echo "netpack — network field tools"
   echo
   for t in "${TOOLS[@]}"; do
-    printf "  %-10s  %s\n" "$t" "$(describe "$t")"
+    printf "  %-10s  %-6s  %s\n" "$t" "$(sudo_tag "$t")" "$(describe "$t")"
   done
 }
 
@@ -136,13 +159,30 @@ run_tool() {
     echo "hint: run 'netpack list'" >&2
     exit 1
   fi
-  exec "$path" "$@"
+  exec "${RUN_PREFIX[@]+"${RUN_PREFIX[@]}"}" "$path" "$@"
 }
 
 run_tool_from_menu() {
   local name=$1
   local -a args=()
-  local line
+  local line ans
+  if [[ -n "$(sudo_tag "$name")" && "$(id -u)" -ne 0 ]] \
+      && command -v sudo >/dev/null 2>&1; then
+    if needs_root "$name"; then
+      echo "  ${name} requires root; using sudo" >&2
+      RUN_PREFIX=(sudo)
+    else
+      printf "  %s uses root for full results; run with sudo? [Y/n]: " "$name" >&2
+      if ! read -r ans; then
+        echo >&2
+        exit 1
+      fi
+      case "$ans" in
+        n|N|no|NO) ;;
+        *) RUN_PREFIX=(sudo) ;;
+      esac
+    fi
+  fi
   while IFS= read -r line; do
     [[ -n "$line" ]] && args+=("$line")
   done < <(menu_args_for "$name")
@@ -150,40 +190,83 @@ run_tool_from_menu() {
 }
 
 menu() {
-  local i=1 t sel
+  local i=1 t sel tag
+  local c_amber='' c_bold='' c_dim='' c_off=''
+  local -a numbered=()
+  # Amber hierarchy when stdout is a TTY; honor NO_COLOR.
+  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    c_amber=$'\033[38;5;214m'
+    c_bold=$'\033[1;38;5;214m'
+    c_dim=$'\033[2;38;5;214m'
+    c_off=$'\033[0m'
+  fi
+  printf '%s' "$c_amber"
   cat <<'EOF'
 
-             _                    _
- _ __   ___| |_ _ __   __ _  ___| | __
-| '_ \ / _ \ __| '_ \ / _` |/ __| |/ /
-| | | |  __/ |_| |_) | (_| | (__|   <
-|_| |_|\___|\__| .__/ \__,_|\___|_|\_\
-               |_|
-
+               _                    _
+   _ __   ___| |_ _ __   __ _  ___| | __
+  | '_ \ / _ \ __| '_ \ / _` |/ __| |/ /
+  | | | |  __/ |_| |_) | (_| | (__|   <
+  |_| |_|\___|\__| .__/ \__,_|\___|_|\_\
+                 |_|
 EOF
-  printf "  netpack (npk)  v%s\n\n" "$(netpack_version)"
+  echo
+  printf "  netpack (npk)   v%s\n" "$(netpack_version)"
+  printf '%s' "$c_off"
+  echo
   for t in "${TOOLS[@]}"; do
-    printf "  %2d) %-10s  %s\n" "$i" "$t" "$(describe "$t")"
+    [[ "$t" == doctor ]] && continue
+    numbered+=("$t")
+    tag="$(sudo_tag "$t")"
+    printf "  %s%2d)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
+      "$c_amber" "$i" "$c_off" \
+      "$c_bold" "$t" "$c_off" \
+      "$c_dim" "$tag" "$c_off" \
+      "$c_amber" "$(describe "$t")" "$c_off"
     i=$((i + 1))
   done
-  printf "  %2d) %-10s  %s\n" 0 "quit" "Exit"
   echo
-  printf "  Select [1-%d, 0 to quit]: " "${#TOOLS[@]}"
+  printf "  %s%2s)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
+    "$c_amber" d "$c_off" \
+    "$c_bold" "doctor" "$c_off" \
+    "$c_dim" "" "$c_off" \
+    "$c_amber" "$(describe doctor)" "$c_off"
+  printf "  %s%2s)%s %s%-10s%s  %s%-6s%s    %s%s%s\n" \
+    "$c_amber" q "$c_off" \
+    "$c_bold" "quit" "$c_off" \
+    "$c_dim" "" "$c_off" \
+    "$c_amber" "Exit" "$c_off"
+  echo
+  local note="  [sudo] needs root"
+  if [[ "$(id -u)" -ne 0 ]]; then
+    note+=" (you are not root)"
+  fi
+  printf '%s%s%s\n' "$c_dim" "$note" "$c_off"
+  echo
+  printf '%s  Select option (q to quit): %s' "$c_amber" "$c_off"
   if ! read -r sel; then
     echo >&2
     exit 1
   fi
   case "$sel" in
-    0|q|Q|quit|QUIT|cancel|CANCEL|"")
+    q|Q|quit|QUIT|cancel|CANCEL|"")
       exit 0
       ;;
   esac
+  echo
+  case "$sel" in
+    d|D|doctor)
+      run_tool_from_menu doctor
+      ;;
+  esac
   if [[ "$sel" =~ ^[0-9]+$ ]]; then
-    if (( sel < 1 || sel > ${#TOOLS[@]} )); then
+    # 10# guards against leading zeros being read as octal
+    sel=$((10#$sel))
+    if (( sel < 1 || sel > ${#numbered[@]} )); then
       echo "error: invalid selection" >&2
       exit 1
     fi
-    run_tool_from_menu "${TOOLS[$((sel - 1))]}"
+    run_tool_from_menu "${numbered[$((sel - 1))]}"
   fi
   for t in "${TOOLS[@]}"; do
     if [[ "$sel" == "$t" ]]; then

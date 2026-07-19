@@ -36,7 +36,7 @@ jobs:
 
       - name: ruff
         run: |
-          ruff check lib/netpack bin/dhcpprobe bin/linkstat
+          ruff check lib/netpack tests bin/dhcpprobe bin/linkstat
 
       - name: py_compile
         run: |
@@ -44,7 +44,7 @@ jobs:
 
       - name: pytest
         run: |
-          PYTHONPATH=lib pytest -q tests/test_diff_offers.py
+          PYTHONPATH=lib pytest -q tests
 
       - name: bats
         run: bats tests/test_parsers.bats

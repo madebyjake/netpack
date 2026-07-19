@@ -15,7 +15,8 @@ source ~/.bashrc
 # Dependencies (Debian; Python >= 3.10 required)
 sudo apt update
 sudo apt install python3 python3-scapy iproute2 iputils-ping dnsutils \
-  ethtool iw mtr-tiny tcpdump arp-scan lldpd iperf3 nftables iputils-tracepath
+  ethtool iw mtr-tiny tcpdump arp-scan lldpd iperf3 nftables iputils-tracepath \
+  curl
 
 # Verify
 npk doctor
@@ -39,6 +40,8 @@ netpack | npk <tool> [args]   Run a tool
 
 Tools are also invocable directly (`dhcpprobe`, `linkstat`, …). Use `-h` / `--help` on any tool.
 
+When you pick a root-requiring tool from the menu without being root, the menu invokes sudo for you (tools where root is optional ask first). Direct invocation never adds sudo.
+
 ## Field playbook
 
 Use these sequences while the symptom is present.
@@ -53,8 +56,9 @@ Use these sequences while the symptom is present.
 
 1. `splitloss` — gateway vs WAN ICMP
 2. `dnscheck` — configured resolvers vs a public resolver
-3. `mtucheck` — path MTU black holes
-4. `path3` / `udp-loss` — path and UDP delivery evidence
+3. `webcheck` — captive portal or HTTP interception (ICMP/DNS clean, HTTP hijacked)
+4. `mtucheck` — path MTU black holes
+5. `path3` / `udp-loss` — path and UDP delivery evidence
 
 **Intermittent dropouts or bursts**
 
@@ -77,6 +81,7 @@ Use these sequences while the symptom is present.
 | `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | Active ARP; root for sweep |
 | `splitloss` | Concurrent gateway vs WAN ping loss | ICMP load for duration |
 | `dnscheck` | Configured vs public DNS resolver comparison | DNS query load |
+| `webcheck` | Captive portal / HTTP interception check | Few small HTTP GETs |
 | `mtucheck` | Path MTU probe to gateway and WAN | Low ICMP load |
 | `path3` | mtr over ICMP, UDP, and TCP | Probe load (count × 3); sudo if CAP_NET_RAW needed |
 | `udp-loss` | UDP delivery via DNS queries with replies | DNS query load |
@@ -98,6 +103,7 @@ Use these sequences while the symptom is present.
 - Prefer least privilege: tools that need root say so and exit cleanly.
 - Tool reports include a local ISO-8601 start timestamp in the header (`tool — 2026-07-18T18:30:00-07:00`). Longer runs also print `finished: …` when the summary completes. JSON `--dump` files include a `timestamp` field.
 - JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`). Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
+- `webcheck` fetches public connectivity endpoints over plain HTTP by design (portals intercept HTTP) and never follows redirects; the redirect target is the evidence.
 - `dhcpprobe` never completes DORA (no REQUEST/ACK); it does not bind a lease.
 - For tagged DHCP, run `dhcpprobe` on the VLAN sub-interface (for example `eth0.100`).
 - `ringcap` requires `-d DIR` and defaults to snaplen 96. Headers may still identify hosts.
@@ -115,6 +121,7 @@ netpack linkstat -t 30 --dump /tmp/linkstat.json
 sudo netpack segscan -i eth0
 netpack splitloss -t 60 -w 1.1.1.1 -d /tmp/splitloss-logs
 netpack dnscheck
+netpack webcheck
 netpack mtucheck
 netpack path3 -c 50 8.8.8.8
 netpack udp-loss -c 100

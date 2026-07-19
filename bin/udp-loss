@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT}/lib/netpack.sh"
 
 COUNT=100
+NAME="cloudflare.com"
 SERVERS=()
 
 usage() {
@@ -18,10 +19,11 @@ responses such as SERVFAIL/REFUSED). This distinguishes datagram delivery from
 ICMP port-unreachable rate limiting seen in mtr -u final-hop loss.
 
 Usage:
-  udp-loss [-c COUNT] [-s SERVER]...
+  udp-loss [-c COUNT] [-n NAME] [-s SERVER]...
 
 Options:
   -c COUNT       Queries per server (default: 100)
+  -n NAME        Query name (default: cloudflare.com)
   -s SERVER      DNS server (repeatable; default: 1.1.1.1 and 9.9.9.9)
   -h, --help     Show this help
 
@@ -47,9 +49,10 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":c:s:h" opt; do
+while getopts ":c:n:s:h" opt; do
   case "$opt" in
     c) COUNT=$OPTARG ;;
+    n) NAME=$OPTARG ;;
     s) SERVERS+=("$OPTARG") ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
@@ -64,7 +67,7 @@ if [[ ${#SERVERS[@]} -eq 0 ]]; then
 fi
 
 header udp-loss
-echo "count: ${COUNT}  servers: ${SERVERS[*]}"
+echo "count: ${COUNT}  servers: ${SERVERS[*]}  name: ${NAME}"
 echo
 
 declare -a LOSS_PCTS=()
@@ -75,7 +78,7 @@ for srv in "${SERVERS[@]}"; do
   rtts=()
   i=0
   while (( i < COUNT )); do
-    t="$(dig @"$srv" cloudflare.com A +time=1 +tries=1 +stats 2>/dev/null \
+    t="$(dig @"$srv" "$NAME" A +time=1 +tries=1 +stats 2>/dev/null \
       | awk '/Query time:/ {print $4; exit}')"
     if [[ -n "${t:-}" ]]; then
       ok=$((ok + 1))
