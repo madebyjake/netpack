@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# path3 — compare mtr over ICMP, UDP, and TCP
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+COUNT=50
+PORT=443
+TARGET=""
+
+usage() {
+  cat <<'EOF'
+path3 — run mtr against a target in ICMP, UDP, and TCP modes.
+
+Compares final-hop loss across protocols. Probe volume is COUNT x 3 modes.
+Requires root (CAP_NET_RAW) for reliable UDP/TCP modes on Debian.
+
+Usage:
+  path3 [-c COUNT] [-p TCP_PORT] TARGET
+
+Options:
+  -c COUNT      Probes per mode (default: 50)
+  -p TCP_PORT   TCP destination port (default: 443)
+  -h, --help    Show this help
+
+Notes:
+  Prefer loss that appears at the final hop and is consistent across protocols.
+  Intermediate-only loss is often control-plane deprioritization, not forwarding loss.
+
+Exit codes:
+  0  all three modes produced usable reports
+  1  usage, dependency, permission, or mode failure
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":c:p:h" opt; do
+  case "$opt" in
+    c) COUNT=$OPTARG ;;
+    p) PORT=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+TARGET=${1:-}
+[[ -n "$TARGET" ]] || { usage >&2; exit 1; }
+is_uint "$COUNT" && [[ "$COUNT" -gt 0 ]] || die "invalid count: ${COUNT}"
+is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
+require_cmd mtr awk
+require_root
+
+header path3
+echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}"
+echo
+
+DIR="$(private_tmpdir path3)"
+cleanup() { rm -rf "$DIR"; }
+trap cleanup EXIT
+
+FAILED_MODES=0
+
+run_mode() {
+  local label=$1
+  shift
+  local out="${DIR}/${label}.txt"
+  echo "=== ${label} (${COUNT} probes) ==="
+  if ! mtr -rwb -c "$COUNT" "$@" "$TARGET" | tee "$out"; then
+    echo "error: mtr ${label} exited non-zero" >&2
+    FAILED_MODES=$((FAILED_MODES + 1))
+  elif [[ ! -s "$out" ]]; then
+    echo "error: mtr ${label} produced no output" >&2
+    FAILED_MODES=$((FAILED_MODES + 1))
+  elif ! grep -q '%' "$out"; then
+    echo "error: mtr ${label} output missing loss columns (unusable report)" >&2
+    FAILED_MODES=$((FAILED_MODES + 1))
+  fi
+  echo
+}
+
+run_mode icmp
+run_mode udp -u
+run_mode tcp -T -P "$PORT"
+
+summarize_final() {
+  local file=$1
+  awk '
+    BEGIN { host = "-"; loss = "-"; avg = "-" }
+    /^HOST:/ { next }
+    NF < 3 { next }
+    {
+      h = $2
+      gsub(/^\.?\|--/, "", h)
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /%$/) {
+          host = h
+          loss = $i
+          if ((i + 3) <= NF) avg = $(i + 3) "ms"
+          break
+        }
+      }
+    }
+    END { printf "%s\t%s\t%s\n", host, loss, avg }
+  ' "$file"
+}
+
+echo "=== final-hop summary ==="
+printf '%-5s %-40s %-10s %s\n' "mode" "host" "loss" "avg"
+for m in icmp udp tcp; do
+  f="${DIR}/${m}.txt"
+  if [[ ! -s "$f" ]]; then
+    printf '%-5s %-40s %-10s %s\n' "$m" "-" "-" "-"
+    continue
+  fi
+  IFS=$'\t' read -r host loss avg <<<"$(summarize_final "$f")"
+  printf '%-5s %-40s %-10s %s\n' "$m" "${host:--}" "${loss:--}" "${avg:--}"
+done
+
+echo "--"
+cat <<'EOF'
+Prefer final-hop loss that is corroborated across protocols.
+Intermediate-only loss is often control-plane deprioritization, not forwarding loss.
+EOF
+
+echo "finished: $(timestamp_local)"
+if (( FAILED_MODES > 0 )); then
+  die "${FAILED_MODES} mtr mode(s) failed or produced unusable output"
+fi
