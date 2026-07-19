@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# dnscheck — compare configured DNS resolvers against a public resolver
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+NAME="cloudflare.com"
+PUBLIC="1.1.1.1"
+TYPE="A"
+
+usage() {
+  cat <<'EOF'
+dnscheck — compare system-configured DNS resolvers with a public resolver.
+
+Queries the same name via each configured resolver and one public resolver.
+Reports RCODE, addresses, and query time. Disagreement or failure often
+explains "network is down" when ICMP still works.
+
+Generates a small number of DNS queries.
+
+Usage:
+  dnscheck [-n NAME] [-p PUBLIC_RESOLVER] [-t TYPE]
+
+Options:
+  -n NAME              Query name (default: cloudflare.com)
+  -p PUBLIC_RESOLVER   Public resolver for baseline (default: 1.1.1.1)
+  -t TYPE              Record type (default: A)
+  -h, --help           Show this help
+
+Exit codes:
+  0  configured and public resolvers agree and succeed
+  1  usage or dependency error
+  2  one or more resolvers failed
+  3  resolvers returned conflicting answers
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":n:p:t:h" opt; do
+  case "$opt" in
+    n) NAME=$OPTARG ;;
+    p) PUBLIC=$OPTARG ;;
+    t) TYPE=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+require_cmd dig awk sort
+
+configured_resolvers() {
+  local resolvers=()
+  if [[ -r /etc/resolv.conf ]]; then
+    while read -r _ ip; do
+      [[ -n "${ip:-}" ]] || continue
+      resolvers+=("$ip")
+    done < <(awk '/^nameserver[[:space:]]+/ {print $1, $2}' /etc/resolv.conf)
+  fi
+  # Deduplicate while preserving order
+  local r out=()
+  for r in "${resolvers[@]+"${resolvers[@]}"}"; do
+    local seen=0 x
+    for x in "${out[@]+"${out[@]}"}"; do
+      [[ "$x" == "$r" ]] && seen=1 && break
+    done
+    if [[ "$seen" -eq 0 ]]; then
+      out+=("$r")
+    fi
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then
+    return 1
+  fi
+  printf '%s\n' "${out[@]}"
+}
+
+query_one() {
+  local server=$1
+  local out status addrs rtt
+  out="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +answer +stats 2>/dev/null || true)"
+  status="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +comments 2>/dev/null \
+    | awk '/status:/ { for (i=1;i<=NF;i++) if ($i=="status:") { gsub(/,/,"",$(i+1)); print $(i+1); exit } }')"
+  addrs="$(printf '%s\n' "$out" | awk -v t="$TYPE" '
+    $4 == t { print $5 }
+  ' | sort -u | tr '\n' ',' | sed 's/,$//')"
+  rtt="$(printf '%s\n' "$out" | awk '/Query time:/ {print $4; exit}')"
+  if [[ -z "${status:-}" ]]; then
+    status="FAIL"
+  fi
+  if [[ -z "${addrs:-}" ]]; then
+    addrs="-"
+  fi
+  if [[ -z "${rtt:-}" ]]; then
+    rtt="-"
+  else
+    rtt="${rtt}ms"
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$server" "$status" "$addrs" "$rtt"
+}
+
+header dnscheck
+echo "name: ${NAME}  type: ${TYPE}"
+echo
+
+mapfile -t CONF < <(configured_resolvers || true)
+if [[ ${#CONF[@]} -eq 0 ]]; then
+  echo "warning: no nameserver entries in /etc/resolv.conf" >&2
+fi
+
+SERVERS=("${CONF[@]+"${CONF[@]}"}")
+# Always include public baseline once
+seen_pub=0
+for s in "${SERVERS[@]+"${SERVERS[@]}"}"; do
+  if [[ "$s" == "$PUBLIC" ]]; then
+    seen_pub=1
+    break
+  fi
+done
+if [[ "$seen_pub" -eq 0 ]]; then
+  SERVERS+=("$PUBLIC")
+fi
+
+echo "=== queries ==="
+printf '%-16s %-10s %-40s %s\n' "resolver" "status" "answers" "rtt"
+declare -a ANSWERS=()
+declare -a STATUSES=()
+declare -a LABELS=()
+
+for s in "${SERVERS[@]}"; do
+  label="configured"
+  if [[ "$s" == "$PUBLIC" ]]; then
+    label="public"
+  fi
+  IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
+  printf '%-16s %-10s %-40s %s\n' "$srv" "$status" "$addrs" "$rtt"
+  LABELS+=("$label")
+  STATUSES+=("$status")
+  ANSWERS+=("$addrs")
+done
+
+# Compare: any FAIL / non-NOERROR -> fail; conflicting answer sets among NOERROR -> conflict
+failed=0
+declare -a ok_answers=()
+for i in "${!STATUSES[@]}"; do
+  st="${STATUSES[$i]}"
+  if [[ "$st" != "NOERROR" ]]; then
+    failed=1
+    continue
+  fi
+  ok_answers+=("${ANSWERS[$i]}")
+done
+
+conflict=0
+if [[ ${#ok_answers[@]} -ge 2 ]]; then
+  first="${ok_answers[0]}"
+  for a in "${ok_answers[@]}"; do
+    if [[ "$a" != "$first" ]]; then
+      conflict=1
+      break
+    fi
+  done
+fi
+
+if (( failed )); then
+  verdict "one or more resolvers failed or returned a non-NOERROR status." \
+    "Check resolver reachability, captive portals, and local DNS configuration."
+  echo "finished: $(timestamp_local)"
+  exit 2
+fi
+if (( conflict )); then
+  verdict "resolvers returned conflicting answers for the same name." \
+    "Compare configured resolvers against the public baseline; suspect hijack, split DNS, or stale cache."
+  echo "finished: $(timestamp_local)"
+  exit 3
+fi
+if [[ ${#CONF[@]} -eq 0 ]]; then
+  verdict "public resolver succeeded; no configured resolvers were found." \
+    "Inspect /etc/resolv.conf or systemd-resolved configuration."
+  echo "finished: $(timestamp_local)"
+  exit 2
+fi
+verdict "configured and public resolvers returned consistent NOERROR answers."
+echo "finished: $(timestamp_local)"
+exit 0
