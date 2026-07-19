@@ -64,9 +64,9 @@ shift $((OPTIND - 1))
 
 HOST=${1:-}
 [[ -n "$HOST" ]] || { usage >&2; exit 1; }
-is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
-is_uint "$DURATION" && [[ "$DURATION" -gt 0 ]] || die "invalid duration: ${DURATION}"
-is_uint "$LENGTH" && [[ "$LENGTH" -gt 0 ]] || die "invalid length: ${LENGTH}"
+require_uint port "$PORT" 1 65535
+require_uint duration "$DURATION" 1
+require_uint length "$LENGTH" 1
 require_cmd iperf3
 
 header testcli

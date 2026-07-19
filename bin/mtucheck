@@ -46,7 +46,7 @@ while getopts ":w:m:h" opt; do
   esac
 done
 
-is_uint "$MAX" && [[ "$MAX" -ge 100 ]] || die "invalid max size: ${MAX}"
+require_uint "max size" "$MAX" 100
 require_cmd ping ip awk
 
 GW="$(default_gateway)"
@@ -54,10 +54,11 @@ GW="$(default_gateway)"
 
 # Linux ping: -M do (DF), -s payload size. IP+ICMP headers ≈ 28 bytes for IPv4.
 # Working total size ≈ payload + 28.
+# Accept size if any of two probes succeed so a single drop does not shrink MTU.
 ping_df() {
   local host=$1
   local payload=$2
-  ping -c1 -W1 -M do -s "$payload" "$host" >/dev/null 2>&1
+  ping -c2 -W1 -M "do" -s "$payload" "$host" >/dev/null 2>&1
 }
 
 largest_ok() {

@@ -1,0 +1,3 @@
+--- 8.8.8.8 ping statistics ---
+10 packets transmitted, 8 received, 20% packet loss, time 9012ms
+rtt min/avg/max/mdev = 10.0/12.0/15.0/1.0 ms

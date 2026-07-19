@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import report  # noqa: E402
+from netpack.dhcp import diff_offers  # noqa: E402
 from netpack.net import NetError, iface_is_up, require_root, resolve_iface  # noqa: E402
 
 EXIT_OK = 0
@@ -210,32 +211,6 @@ def collect_offers(iface: str, timeout: float, verbose: bool) -> list[dict[str, 
             print(f"offer from {key}", file=sys.stderr)
 
     return list(offers.values())
-
-
-def diff_offers(offers: list[dict[str, Any]]) -> list[str]:
-    if len(offers) < 2:
-        return []
-    fields = [
-        ("subnet_mask", "subnet_mask"),
-        ("routers", "gateway"),
-        ("dns", "dns"),
-        ("domain", "domain"),
-        ("lease_seconds", "lease"),
-    ]
-    lines: list[str] = []
-    for key, label in fields:
-        values = []
-        for o in offers:
-            val = o.get(key)
-            if isinstance(val, list):
-                values.append(", ".join(val) if val else "-")
-            elif val is None or val == "":
-                values.append("-")
-            else:
-                values.append(str(val))
-        if len(set(values)) > 1:
-            lines.append(f"  {label}: " + " | ".join(values))
-    return lines
 
 
 def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> None:

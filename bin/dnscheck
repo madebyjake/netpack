@@ -29,6 +29,9 @@ Options:
   -t TYPE              Record type (default: A)
   -h, --help           Show this help
 
+Note: names with geo or round-robin answers (CDNs) can differ legitimately
+across resolvers. Prefer stable names (the default) for hijack checks.
+
 Exit codes:
   0  configured and public resolvers agree and succeed
   1  usage or dependency error
@@ -51,6 +54,8 @@ while getopts ":n:p:t:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+
+TYPE="${TYPE^^}"  # dig prints record types uppercase
 
 require_cmd dig awk sort
 
@@ -82,11 +87,18 @@ configured_resolvers() {
 query_one() {
   local server=$1
   local out status addrs rtt
-  out="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +answer +stats 2>/dev/null || true)"
-  status="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +comments 2>/dev/null \
-    | awk '/status:/ { for (i=1;i<=NF;i++) if ($i=="status:") { gsub(/,/,"",$(i+1)); print $(i+1); exit } }')"
+  # One dig so status, answers, and RTT come from the same transaction.
+  out="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +answer +comments +stats 2>/dev/null || true)"
+  status="$(printf '%s\n' "$out" | awk '/status:/ {
+    for (i=1;i<=NF;i++) if ($i=="status:") { gsub(/,/,"",$(i+1)); print $(i+1); exit }
+  }')"
   addrs="$(printf '%s\n' "$out" | awk -v t="$TYPE" '
-    $4 == t { print $5 }
+    $4 == t {
+      # Keep full rdata (MX priority+host, multi-field TXT, ...)
+      rdata = $5
+      for (i = 6; i <= NF; i++) rdata = rdata " " $i
+      print rdata
+    }
   ' | sort -u | tr '\n' ',' | sed 's/,$//')"
   rtt="$(printf '%s\n' "$out" | awk '/Query time:/ {print $4; exit}')"
   if [[ -z "${status:-}" ]]; then

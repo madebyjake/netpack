@@ -64,9 +64,9 @@ while getopts ":i:s:n:d:f:S:h" opt; do
 done
 
 [[ -n "$DIR" ]] || die "output directory required (-d DIR)"
-is_uint "$MB" && [[ "$MB" -gt 0 ]] || die "invalid file size: ${MB}"
-is_uint "$N" && [[ "$N" -gt 0 ]] || die "invalid file count: ${N}"
-is_uint "$SNAPLEN" && [[ "$SNAPLEN" -gt 0 ]] || die "invalid snaplen: ${SNAPLEN}"
+require_uint "file size" "$MB" 1
+require_uint "file count" "$N" 1
+require_uint snaplen "$SNAPLEN" 1
 IFACE="$(resolve_iface "${IFACE}")"
 require_cmd tcpdump
 require_root
@@ -82,8 +82,10 @@ echo "filter: ${FILT:-<none>}"
 echo "Note wall-clock time when the symptom occurs. Stop with Ctrl-C."
 
 cd "$ABS_DIR"
+# Stay root after opening the device so -C rotation can create files in this
+# root-owned 0700 directory (Debian/Ubuntu tcpdump otherwise drops to tcpdump).
 if [[ -n "$FILT" ]]; then
-  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
 else
-  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
 fi

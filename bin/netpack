@@ -43,6 +43,15 @@ describe() {
   esac
 }
 
+netpack_version() {
+  local init="${ROOT}/../lib/netpack/__init__.py"
+  if [[ -f "$init" ]]; then
+    sed -n 's/^__version__ = "\(.*\)"/\1/p' "$init" | head -1
+  else
+    echo "0.1.0"
+  fi
+}
+
 usage() {
   local me t
   me="$(basename "${BASH_SOURCE[0]}")"
@@ -53,6 +62,7 @@ Usage:
   ${me}                 Interactive menu
   ${me} list            List tools
   ${me} help            Show this help
+  ${me} --version       Print version
   ${me} <tool> [args]   Run a tool (arguments pass through)
 
 Also available as: netpack | npk
@@ -65,8 +75,9 @@ EOF
   cat <<'EOF'
 
 Options:
-  -h, --help, help   Show this help
-  list, ls           List tools
+  -h, --help, help     Show this help
+  -V, --version        Print version
+  list, ls             List tools
 
 Tools are also available directly from this directory when it is on PATH.
 EOF
@@ -81,6 +92,41 @@ list_tools() {
   done
 }
 
+# Prompt for required args when launching from the interactive menu.
+menu_args_for() {
+  local name=$1
+  local val
+  case "$name" in
+    path3)
+      printf "TARGET (required): " >&2
+      if ! read -r val; then
+        echo >&2
+        exit 1
+      fi
+      [[ -n "$val" ]] || { echo "error: TARGET required" >&2; exit 1; }
+      printf '%s\n' "$val"
+      ;;
+    ringcap)
+      printf "Output directory -d DIR (required): " >&2
+      if ! read -r val; then
+        echo >&2
+        exit 1
+      fi
+      [[ -n "$val" ]] || { echo "error: -d DIR required" >&2; exit 1; }
+      printf -- '%s\n' -d "$val"
+      ;;
+    testcli)
+      printf "HOST (required): " >&2
+      if ! read -r val; then
+        echo >&2
+        exit 1
+      fi
+      [[ -n "$val" ]] || { echo "error: HOST required" >&2; exit 1; }
+      printf '%s\n' "$val"
+      ;;
+  esac
+}
+
 run_tool() {
   local name=$1
   shift
@@ -91,6 +137,16 @@ run_tool() {
     exit 1
   fi
   exec "$path" "$@"
+}
+
+run_tool_from_menu() {
+  local name=$1
+  local -a args=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && args+=("$line")
+  done < <(menu_args_for "$name")
+  run_tool "$name" "${args[@]+"${args[@]}"}"
 }
 
 menu() {
@@ -112,11 +168,11 @@ menu() {
       echo "error: invalid selection" >&2
       exit 1
     fi
-    run_tool "${TOOLS[$((sel - 1))]}"
+    run_tool_from_menu "${TOOLS[$((sel - 1))]}"
   fi
   for t in "${TOOLS[@]}"; do
     if [[ "$sel" == "$t" ]]; then
-      run_tool "$t"
+      run_tool_from_menu "$t"
     fi
   done
   echo "error: unknown tool: ${sel}" >&2
@@ -131,6 +187,9 @@ main() {
   case "$1" in
     help|-h|--help)
       usage
+      ;;
+    -V|--version)
+      echo "netpack $(netpack_version)"
       ;;
     list|ls)
       list_tools
