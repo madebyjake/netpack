@@ -161,7 +161,7 @@ menu() {
                |_|
 
 EOF
-  printf "  netpack (npk)  v%s\n\n" "$(netpack_version)"
+  printf "  netpack (npk)   v%s\n\n" "$(netpack_version)"
   for t in "${TOOLS[@]}"; do
     printf "  %2d) %-10s  %s\n" "$i" "$t" "$(describe "$t")"
     i=$((i + 1))
