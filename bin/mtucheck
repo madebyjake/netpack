@@ -46,7 +46,7 @@ while getopts ":w:m:h" opt; do
   esac
 done
 
-is_uint "$MAX" && [[ "$MAX" -ge 100 ]] || die "invalid max size: ${MAX}"
+require_uint "max size" "$MAX" 100
 require_cmd ping ip awk
 
 GW="$(default_gateway)"
