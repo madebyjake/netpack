@@ -54,7 +54,7 @@ while getopts ":p:h" opt; do
   esac
 done
 
-is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
+require_uint port "$PORT" 1 65535
 require_cmd iperf3
 
 nft_sets_present() {
