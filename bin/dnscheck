@@ -35,7 +35,7 @@ across resolvers. Prefer stable names (the default) for hijack checks.
 Exit codes:
   0  configured and public resolvers agree and succeed
   1  usage or dependency error
-  2  one or more resolvers failed
+  2  one or more resolvers failed (or none were configured)
   3  resolvers returned conflicting answers
 EOF
 }
