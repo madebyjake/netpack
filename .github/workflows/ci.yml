@@ -31,7 +31,8 @@ jobs:
             find bin -type f -exec awk 'FNR == 1 && /^#!.*bash/ { print FILENAME }' {} + | sort
             find lib -type f -name '*.sh' | sort
           )
-          shellcheck --source-path=SCRIPTDIR -x -e SC1091,SC2329 "${scripts[@]}"
+          # SC2317/SC2329: false positives on trap-invoked cleanup functions
+          shellcheck --source-path=SCRIPTDIR -x -e SC1091,SC2317,SC2329 "${scripts[@]}"
 
       - name: ruff
         run: |
