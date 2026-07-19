@@ -82,8 +82,10 @@ echo "filter: ${FILT:-<none>}"
 echo "Note wall-clock time when the symptom occurs. Stop with Ctrl-C."
 
 cd "$ABS_DIR"
+# Stay root after opening the device so -C rotation can create files in this
+# root-owned 0700 directory (Debian/Ubuntu tcpdump otherwise drops to tcpdump).
 if [[ -n "$FILT" ]]; then
-  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
 else
-  exec tcpdump -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
 fi
