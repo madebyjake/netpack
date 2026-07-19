@@ -151,18 +151,33 @@ run_tool_from_menu() {
 
 menu() {
   local i=1 t sel
-  echo "netpack — network field tools"
-  echo
+  cat <<'EOF'
+
+             _                    _
+ _ __   ___| |_ _ __   __ _  ___| | __
+| '_ \ / _ \ __| '_ \ / _` |/ __| |/ /
+| | | |  __/ |_| |_) | (_| | (__|   <
+|_| |_|\___|\__| .__/ \__,_|\___|_|\_\
+               |_|
+
+EOF
+  printf "  netpack (npk)  v%s\n\n" "$(netpack_version)"
   for t in "${TOOLS[@]}"; do
-    printf "  %d  %-10s  %s\n" "$i" "$t" "$(describe "$t")"
+    printf "  %2d) %-10s  %s\n" "$i" "$t" "$(describe "$t")"
     i=$((i + 1))
   done
+  printf "  %2d) %-10s  %s\n" 0 "quit" "Exit"
   echo
-  printf "Select tool [1-%d or name]: " "${#TOOLS[@]}"
+  printf "  Select [1-%d, 0 to quit]: " "${#TOOLS[@]}"
   if ! read -r sel; then
     echo >&2
     exit 1
   fi
+  case "$sel" in
+    0|q|Q|quit|QUIT|cancel|CANCEL|"")
+      exit 0
+      ;;
+  esac
   if [[ "$sel" =~ ^[0-9]+$ ]]; then
     if (( sel < 1 || sel > ${#TOOLS[@]} )); then
       echo "error: invalid selection" >&2
