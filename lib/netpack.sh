@@ -1,5 +1,6 @@
 # Shared helpers for netpack bash tools.
 # shellcheck shell=bash
+# Keep iface/gateway/validation in sync with lib/netpack/net.py.
 
 netpack_root() {
   local here
