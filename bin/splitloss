@@ -57,7 +57,7 @@ while getopts ":t:w:d:h" opt; do
   esac
 done
 
-is_uint "$T" && [[ "$T" -gt 0 ]] || die "invalid duration: ${T}"
+require_uint duration "$T" 1
 require_cmd ping ip
 
 GW="$(default_gateway)"
