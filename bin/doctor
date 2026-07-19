@@ -63,11 +63,33 @@ check_optional() {
 MISSING=0
 
 header doctor
+echo "version: $(netpack_version)"
 echo "root: $(netpack_root)"
 echo "bin:  $(netpack_bin)"
 echo "user: $(id -un) (uid $(id -u))"
 if [[ "$(id -u)" -eq 0 ]]; then
   echo "note: running as root (not required for doctor)"
+fi
+echo
+
+echo "=== runtime ==="
+# bash 5.x is assumed but nothing 5-specific is used; warn without failing.
+if (( BASH_VERSINFO[0] >= 5 )); then
+  printf '  %-14s OK (%s)\n' "bash" "${BASH_VERSION}"
+else
+  printf '  %-14s OLD (%s; 5.x assumed)\n' "bash" "${BASH_VERSION}"
+fi
+if have python3; then
+  pyver="$(python3 -c 'import platform; print(platform.python_version())')"
+  if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    printf '  %-14s OK (%s)\n' "python3>=3.10" "$pyver"
+  else
+    printf '  %-14s TOO OLD (%s; need >= 3.10)\n' "python3" "$pyver"
+    MISSING=$((MISSING + 1))
+  fi
+else
+  printf '  %-14s MISSING\n' "python3"
+  MISSING=$((MISSING + 1))
 fi
 echo
 
@@ -122,6 +144,10 @@ echo
 
 tool_header "dnscheck" "no"
 check_cmd dig || MISSING=$((MISSING + 1))
+echo
+
+tool_header "webcheck" "no"
+check_cmd curl || MISSING=$((MISSING + 1))
 echo
 
 tool_header "mtucheck" "no"
