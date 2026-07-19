@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# testcli — iperf3 client companion to testsrv
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+PORT=5201
+DURATION=30
+UDP=0
+BANDWIDTH="5M"
+LENGTH=200
+HOST=""
+
+usage() {
+  cat <<'EOF'
+testcli — iperf3 client for planned throughput/loss tests against testsrv.
+
+Generates significant traffic. Use only during planned tests on live networks.
+
+Typical pair:
+  On uConsole:  sudo testsrv -p 5201
+  On client:    testcli <uconsole-ip>
+                testcli -u -b 5M <uconsole-ip>
+
+UDP mode uses a controlled rate suitable for game-like loss checks. The UDP
+report Lost/Total is one-way loss on the path under test.
+
+Usage:
+  testcli [-p PORT] [-t SECONDS] [-u] [-b BANDWIDTH] [-l LENGTH] HOST
+
+Options:
+  -p PORT        Server port (default: 5201)
+  -t SECONDS     Test duration (default: 30)
+  -u             UDP mode (default: TCP)
+  -b BANDWIDTH   UDP target bitrate (default: 5M); ignored for TCP
+  -l LENGTH      UDP payload length (default: 200); ignored for TCP
+  -h, --help     Show this help
+
+Exit codes:
+  0  iperf3 client completed successfully
+  1  usage, dependency, or iperf3 error
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":p:t:ub:l:h" opt; do
+  case "$opt" in
+    p) PORT=$OPTARG ;;
+    t) DURATION=$OPTARG ;;
+    u) UDP=1 ;;
+    b) BANDWIDTH=$OPTARG ;;
+    l) LENGTH=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+HOST=${1:-}
+[[ -n "$HOST" ]] || { usage >&2; exit 1; }
+is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
+is_uint "$DURATION" && [[ "$DURATION" -gt 0 ]] || die "invalid duration: ${DURATION}"
+is_uint "$LENGTH" && [[ "$LENGTH" -gt 0 ]] || die "invalid length: ${LENGTH}"
+require_cmd iperf3
+
+header testcli
+echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s"
+if [[ "$UDP" -eq 1 ]]; then
+  echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}"
+  echo "warning: generates significant traffic"
+  exec iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" -t "$DURATION"
+else
+  echo "mode: TCP"
+  echo "warning: generates significant traffic"
+  exec iperf3 -c "$HOST" -p "$PORT" -t "$DURATION"
+fi
