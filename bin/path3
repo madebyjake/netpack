@@ -55,8 +55,8 @@ shift $((OPTIND - 1))
 
 TARGET=${1:-}
 [[ -n "$TARGET" ]] || { usage >&2; exit 1; }
-is_uint "$COUNT" && [[ "$COUNT" -gt 0 ]] || die "invalid count: ${COUNT}"
-is_uint "$PORT" && [[ "$PORT" -ge 1 && "$PORT" -le 65535 ]] || die "invalid port: ${PORT}"
+require_uint count "$COUNT" 1
+require_uint port "$PORT" 1 65535
 require_cmd mtr awk
 
 header path3
