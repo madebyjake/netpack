@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# splitloss — compare gateway vs WAN loss over a concurrent ping window
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+T=60
+WAN=1.1.1.1
+DIR=""
+KEEP_LOGS=0
+
+usage() {
+  cat <<'EOF'
+splitloss — ping default gateway and a WAN target concurrently, then compare loss.
+
+Localizes fault domain:
+  gateway lossy                 -> access layer
+  gateway clean, WAN lossy      -> uplink / path beyond the gateway
+  both clean                    -> not indicated in this window
+
+Usage:
+  splitloss [-t SECONDS] [-w WAN_TARGET] [-d DIR]
+
+Options:
+  -t SECONDS       Test duration (default: 60)
+  -w WAN_TARGET    WAN ICMP target (default: 1.1.1.1)
+  -d DIR           Keep timestamped logs in DIR (created if needed)
+  -h, --help       Show this help
+
+Without -d, logs are written under a private temp directory and removed on exit
+after the summary is printed. Use -d to retain logs for timeline correlation.
+
+Exit codes:
+  0  both targets clean (<=1% loss)
+  1  usage, dependency, or probe failure
+  2  gateway loss (>1%)
+  3  gateway clean, WAN loss (>1%)
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":t:w:d:h" opt; do
+  case "$opt" in
+    t) T=$OPTARG ;;
+    w) WAN=$OPTARG ;;
+    d) DIR=$OPTARG; KEEP_LOGS=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+is_uint "$T" && [[ "$T" -gt 0 ]] || die "invalid duration: ${T}"
+require_cmd ping ip
+
+GW="$(default_gateway)"
+[[ -n "$GW" ]] || die "no default gateway"
+
+if [[ "$KEEP_LOGS" -eq 1 ]]; then
+  mkdir -p "$DIR"
+  chmod 700 "$DIR" 2>/dev/null || true
+else
+  DIR="$(private_tmpdir splitloss)"
+fi
+
+LOG_GW="${DIR}/gw.log"
+LOG_WAN="${DIR}/wan.log"
+
+cleanup() {
+  if [[ "${CLEAN_TMP:-0}" -eq 1 && "$KEEP_LOGS" -eq 0 && -n "${DIR:-}" && -d "$DIR" ]]; then
+    rm -rf "$DIR"
+  fi
+}
+trap cleanup EXIT
+
+header splitloss
+echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s"
+set +e
+ping -D -i 1 -w "$T" "$GW"  >"$LOG_GW"  2>&1 &
+P1=$!
+ping -D -i 1 -w "$T" "$WAN" >"$LOG_WAN" 2>&1 &
+P2=$!
+wait "$P1"
+RC1=$?
+wait "$P2"
+RC2=$?
+set -e
+
+# ping returns 1 when some packets are lost but the run completed; 2+ is error.
+if [[ ! -s "$LOG_GW" || ! -s "$LOG_WAN" ]]; then
+  echo "logs retained: ${DIR}" >&2
+  die "ping produced empty logs (check permissions and connectivity)"
+fi
+if (( RC1 >= 2 || RC2 >= 2 )); then
+  echo "logs retained: ${DIR}" >&2
+  die "ping failed (gateway exit ${RC1}, wan exit ${RC2})"
+fi
+
+loss_pct() {
+  local file=$1 pct
+  pct="$(grep -Eo '[0-9]+% packet loss' "$file" 2>/dev/null | head -1 | tr -dc '0-9')"
+  if [[ -z "$pct" ]]; then
+    return 1
+  fi
+  echo "$pct"
+}
+
+gl="$(loss_pct "$LOG_GW")" || {
+  echo "logs retained: ${DIR}" >&2
+  die "could not parse gateway ping summary in ${LOG_GW}"
+}
+wl="$(loss_pct "$LOG_WAN")" || {
+  echo "logs retained: ${DIR}" >&2
+  die "could not parse WAN ping summary in ${LOG_WAN}"
+}
+
+printf 'gateway (%s): %s%% packet loss\n' "$GW" "$gl"
+printf 'wan     (%s): %s%% packet loss\n' "$WAN" "$wl"
+if [[ "$KEEP_LOGS" -eq 1 ]]; then
+  echo "logs: ${LOG_GW} ${LOG_WAN}"
+else
+  echo "logs: discarded after summary (pass -d DIR to retain)"
+fi
+
+# Enable temp cleanup only for successful interpretation paths.
+CLEAN_TMP=1
+
+finish() { echo "finished: $(timestamp_local)"; }
+
+if (( gl > 1 )); then
+  verdict "loss to gateway indicates an access-layer problem." \
+    "Inspect local switch/AP, cabling, and the gateway path."
+  finish
+  exit 2
+elif (( wl > 1 )); then
+  verdict "gateway is clean; WAN path shows loss." \
+    "Inspect uplink, venue circuit, and upstream path evidence."
+  finish
+  exit 3
+else
+  verdict "both targets were clean during this window." \
+    "If the symptom was active, check application, server, or DNS layers."
+  finish
+  exit 0
+fi
