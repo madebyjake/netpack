@@ -1,4 +1,7 @@
-"""Network helpers: interface resolution, gateway lookup, privilege checks."""
+"""Network helpers: interface resolution, gateway lookup, privilege checks.
+
+Keep iface/gateway/validation in sync with lib/netpack.sh.
+"""
 
 from __future__ import annotations
 
