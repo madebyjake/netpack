@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck and bats
+        run: sudo apt-get update && sudo apt-get install -y shellcheck bats
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: shellcheck
+        run: |
+          # Select bash tools by shebang; bin also holds extensionless Python tools.
+          mapfile -t scripts < <(
+            find bin -type f -exec awk 'FNR == 1 && /^#!.*bash/ { print FILENAME }' {} + | sort
+            find lib -type f -name '*.sh' | sort
+          )
+          shellcheck --source-path=SCRIPTDIR -x -e SC1091,SC2329 "${scripts[@]}"
+
+      - name: ruff
+        run: |
+          ruff check lib/netpack bin/dhcpprobe bin/linkstat
+
+      - name: py_compile
+        run: |
+          python -m py_compile lib/netpack/*.py bin/dhcpprobe bin/linkstat
+
+      - name: pytest
+        run: |
+          PYTHONPATH=lib pytest -q tests/test_diff_offers.py
+
+      - name: bats
+        run: bats tests/test_parsers.bats
+
+      - name: smoke
+        run: |
+          bin/netpack --version
+          bin/netpack help >/dev/null
+          bin/npk list
+          mapfile -t tools < <(bin/netpack list | awk 'NR > 2 && NF { print $1 }')
+          (( ${#tools[@]} >= 12 )) || { echo "expected >= 12 tools, got ${#tools[@]}"; exit 1; }
+          for t in "${tools[@]}"; do
+            echo "--help: $t"
+            bin/netpack "$t" --help >/dev/null
+          done
