@@ -14,12 +14,16 @@ TOOLS=(
   dhcpprobe
   linkstat
   segscan
+  wifiscan
+  discover
   splitloss
   dnscheck
   webcheck
+  portcheck
   mtucheck
   path3
   udp-loss
+  mcastcheck
   ringcap
   testsrv
   testcli
@@ -32,12 +36,16 @@ describe() {
     dhcpprobe) echo "DHCP servers on the local segment" ;;
     linkstat)  echo "Link counters; physical vs congestion signals" ;;
     segscan)   echo "Segment inventory (LLDP, gateway, ARP)" ;;
+    wifiscan)  echo "Wi-Fi AP survey and channel usage" ;;
+    discover)  echo "SSDP/mDNS service discovery" ;;
     splitloss) echo "Concurrent gateway vs WAN loss comparison" ;;
     dnscheck)  echo "Configured vs public DNS resolver comparison" ;;
-    webcheck)  echo "Captive portal / HTTP interception check" ;;
+    webcheck)  echo "Captive portal / HTTP + TLS interception check" ;;
+    portcheck) echo "TCP service reachability by port" ;;
     mtucheck)  echo "Path MTU probe to gateway and WAN" ;;
     path3)     echo "mtr over ICMP, UDP, and TCP" ;;
     udp-loss)  echo "UDP loss via DNS queries with real replies" ;;
+    mcastcheck) echo "Multicast delivery check (Dante/NDI paths)" ;;
     ringcap)   echo "Rotating packet capture ring buffer" ;;
     testsrv)   echo "iperf3 server with timed firewall open" ;;
     testcli)   echo "iperf3 client companion to testsrv" ;;
@@ -48,7 +56,18 @@ describe() {
 # Tools that require (or commonly require) root; tagged in menu and list.
 sudo_tag() {
   case "$1" in
-    dhcpprobe|segscan|path3|ringcap|testsrv) echo "[sudo]" ;;
+    dhcpprobe|segscan|wifiscan|path3|ringcap|testsrv) echo "[sudo]" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Tools that generate network activity; tagged in menu and list.
+# [warn] = significant load or active probing (may look like recon/intrusion).
+# [note] = lighter diagnostic traffic.
+impact_tag() {
+  case "$1" in
+    segscan|path3|testsrv|testcli) echo "[warn]" ;;
+    dhcpprobe|wifiscan|discover|splitloss|udp-loss|mtucheck|portcheck|mcastcheck) echo "[note]" ;;
     *) echo "" ;;
   esac
 }
@@ -56,7 +75,7 @@ sudo_tag() {
 # Tools that cannot do anything useful without root (subset of sudo_tag).
 needs_root() {
   case "$1" in
-    dhcpprobe|ringcap) return 0 ;;
+    dhcpprobe|wifiscan|ringcap) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -91,11 +110,14 @@ Also available as: netpack | npk
 Tools:
 EOF
   for t in "${TOOLS[@]}"; do
-    printf "  %-10s  %-6s  %s\n" "$t" "$(sudo_tag "$t")" "$(describe "$t")"
+    printf "  %-10s  %-6s %-9s  %s\n" "$t" "$(sudo_tag "$t")" "$(impact_tag "$t")" "$(describe "$t")"
   done
   cat <<'EOF'
 
-[sudo] marks tools that need root for some or all operations.
+[sudo]    marks tools that need root for some or all operations.
+[note]    marks tools that generate light diagnostic traffic.
+[warn]    marks tools with significant load or active probing
+          (may look like recon on a third-party network) — planned tests only.
 
 Options:
   -h, --help, help     Show this help
@@ -107,19 +129,57 @@ EOF
 }
 
 list_tools() {
-  local t
-  echo "netpack — network field tools"
+  local t st it c_tag
+  local c_amber='' c_bold='' c_note='' c_warn='' c_off=''
+  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    c_amber=$'\033[38;5;214m'
+    c_bold=$'\033[1m'
+    c_note=$'\033[38;5;214m'
+    c_warn=$'\033[31m'
+    c_off=$'\033[0m'
+  fi
+  printf '%snetpack (npk)   v%s%s\n' "$c_amber" "$(netpack_version)" "$c_off"
   echo
   for t in "${TOOLS[@]}"; do
-    printf "  %-10s  %-6s  %s\n" "$t" "$(sudo_tag "$t")" "$(describe "$t")"
+    st="$(sudo_tag "$t")"
+    it="$(impact_tag "$t")"
+    c_tag=$c_note
+    [[ "$it" == "[warn]" ]] && c_tag=$c_warn
+    printf "  %s%-10s%s  %-6s %s%-6s%s    %s\n" \
+      "$c_bold" "$t" "$c_off" \
+      "$st" \
+      "$c_tag" "$it" "$c_off" \
+      "$(describe "$t")"
   done
+  echo
+  printf '  [sudo]    needs root\n'
+  printf '  %s[note]%s    light diagnostic traffic\n' "$c_note" "$c_off"
+  printf '  %s[warn]%s    significant load or active probing — planned tests only\n' "$c_warn" "$c_off"
 }
 
 # Prompt for required args when launching from the interactive menu.
 menu_args_for() {
   local name=$1
-  local val
+  local val p
   case "$name" in
+    portcheck)
+      printf "HOST (required): " >&2
+      if ! read -r val; then
+        echo >&2
+        exit 1
+      fi
+      [[ -n "$val" ]] || { echo "error: HOST required" >&2; exit 1; }
+      printf '%s\n' "$val"
+      printf "PORT(S), space-separated (required): " >&2
+      if ! read -r val; then
+        echo >&2
+        exit 1
+      fi
+      [[ -n "$val" ]] || { echo "error: PORT required" >&2; exit 1; }
+      for p in $val; do
+        printf '%s\n' "$p"
+      done
+      ;;
     path3)
       printf "TARGET (required): " >&2
       if ! read -r val; then
@@ -183,22 +243,29 @@ run_tool_from_menu() {
       esac
     fi
   fi
+  # Command substitution (not process substitution) so an exit 1 inside
+  # menu_args_for aborts the launch instead of running the tool with no args.
+  local out
+  if ! out="$(menu_args_for "$name")"; then
+    exit 1
+  fi
   while IFS= read -r line; do
     [[ -n "$line" ]] && args+=("$line")
-  done < <(menu_args_for "$name")
+  done <<<"$out"
   run_tool "$name" "${args[@]+"${args[@]}"}"
 }
 
 menu() {
-  local i=1 t sel tag
-  local c_amber='' c_bold='' c_sudo='' c_root='' c_off=''
+  local i=1 t sel st it c_tag
+  local c_amber='' c_bold='' c_note='' c_warn='' c_root='' c_off=''
   local -a numbered=()
-  # Amber heading, dim sudo tags, red when root; honor NO_COLOR / non-TTY.
+  # Amber heading/[note], red [warn], blue root; honor NO_COLOR / non-TTY.
   if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     c_amber=$'\033[38;5;214m'
     c_bold=$'\033[1m'
-    c_sudo=$'\033[2m'
-    c_root=$'\033[31m'
+    c_note=$'\033[38;5;214m'
+    c_warn=$'\033[31m'
+    c_root=$'\033[34m'
     c_off=$'\033[0m'
   fi
   printf '%s' "$c_amber"
@@ -218,31 +285,39 @@ EOF
   for t in "${TOOLS[@]}"; do
     [[ "$t" == doctor ]] && continue
     numbered+=("$t")
-    tag="$(sudo_tag "$t")"
-    printf "  %2d) %s%-10s%s  %s%-6s%s    %s\n" \
+    st="$(sudo_tag "$t")"
+    it="$(impact_tag "$t")"
+    c_tag=$c_note
+    [[ "$it" == "[warn]" ]] && c_tag=$c_warn
+    printf "  %2d) %s%-10s%s  %-6s %s%-6s%s    %s\n" \
       "$i" \
       "$c_bold" "$t" "$c_off" \
-      "$c_sudo" "$tag" "$c_off" \
+      "$st" \
+      "$c_tag" "$it" "$c_off" \
       "$(describe "$t")"
     i=$((i + 1))
   done
   echo
-  printf "  %2s) %s%-10s%s  %s%-6s%s    %s\n" \
+  printf "  %2s) %s%-10s%s  %-6s %-6s    %s\n" \
     d \
     "$c_bold" "doctor" "$c_off" \
-    "$c_sudo" "" "$c_off" \
+    "" \
+    "" \
     "$(describe doctor)"
-  printf "  %2s) %s%-10s%s  %s%-6s%s    %s\n" \
+  printf "  %2s) %s%-10s%s  %-6s %-6s    %s\n" \
     q \
     "$c_bold" "quit" "$c_off" \
-    "$c_sudo" "" "$c_off" \
+    "" \
+    "" \
     "Exit"
   echo
   if [[ "$(id -u)" -eq 0 ]]; then
-    printf '%s%s%s\n' "$c_root" "  running as root" "$c_off"
+    printf '  [sudo]    %srunning as root!%s\n' "$c_root" "$c_off"
   else
-    printf '%s%s%s\n' "$c_sudo" "  [sudo] needs root (you are not root)" "$c_off"
+    printf '  [sudo]    needs root (you are not root)\n'
   fi
+  printf '  %s[note]%s    light diagnostic traffic\n' "$c_note" "$c_off"
+  printf '  %s[warn]%s    significant load or active probing — planned tests only\n' "$c_warn" "$c_off"
   echo
   printf '%s  Select option (q to quit): %s' "$c_amber" "$c_off"
   if ! read -r sel; then
@@ -251,6 +326,8 @@ EOF
   fi
   case "$sel" in
     q|Q|quit|QUIT|cancel|CANCEL|"")
+      echo
+      printf '%sBye!%s\n' "$c_amber" "$c_off"
       exit 0
       ;;
   esac
@@ -288,7 +365,12 @@ main() {
       usage
       ;;
     -V|--version)
-      echo "netpack $(netpack_version)"
+      local c_amber='' c_off=''
+      if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+        c_amber=$'\033[38;5;214m'
+        c_off=$'\033[0m'
+      fi
+      printf '%snetpack (npk)   v%s%s\n' "$c_amber" "$(netpack_version)" "$c_off"
       ;;
     list|ls)
       list_tools
