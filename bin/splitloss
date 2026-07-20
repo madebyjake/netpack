@@ -141,8 +141,13 @@ bucket_clock() {
 
 print_timeline() {
   local label=$1 log=$2
-  local rows off lost expect pct
-  rows="$(bucket_loss "$log" 60 || true)"
+  local rows rc=0 off lost expect pct
+  # bucket_loss exits non-zero on an unusable log; do not report that as clean.
+  rows="$(bucket_loss "$log" 60)" || rc=$?
+  if (( rc != 0 )); then
+    echo "  ${label}: $(color_status warn "timeline unavailable (log not parseable)")"
+    return 0
+  fi
   if [[ -z "$rows" ]]; then
     echo "  ${label}: $(color_status ok "no lossy intervals")"
     return 0
