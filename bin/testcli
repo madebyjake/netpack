@@ -73,10 +73,10 @@ header testcli
 echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s"
 if [[ "$UDP" -eq 1 ]]; then
   echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}"
-  echo "warning: generates significant traffic"
+  warning "generates significant traffic"
   exec iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" -t "$DURATION"
 else
   echo "mode: TCP"
-  echo "warning: generates significant traffic"
+  warning "generates significant traffic"
   exec iperf3 -c "$HOST" -p "$PORT" -t "$DURATION"
 fi
