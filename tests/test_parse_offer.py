@@ -104,3 +104,66 @@ def test_parse_offer_zero_yiaddr() -> None:
     parsed = dhcpprobe.parse_offer(offer)
     assert parsed["offered_ip"] is None
     assert parsed["offered_cidr"] is None
+
+
+def _opts(pkt) -> dict:
+    from scapy.layers.dhcp import DHCP
+
+    return {
+        item[0]: (item[1:] if len(item) > 2 else item[1])
+        for item in pkt[DHCP].options
+        if isinstance(item, tuple) and len(item) >= 2
+    }
+
+
+def test_build_request_fields() -> None:
+    from scapy.layers.dhcp import BOOTP
+    from scapy.layers.inet import IP, UDP
+    from scapy.layers.l2 import Ether
+
+    pkt = Ether(
+        bytes(
+            dhcpprobe.build_request(
+                "02:00:00:aa:bb:cc", 0x1234, "192.168.1.50", "192.168.1.1"
+            )
+        )
+    )
+    o = _opts(pkt)
+    assert o["message-type"] == 3  # request
+    assert o["requested_addr"] == "192.168.1.50"
+    assert o["server_id"] == "192.168.1.1"
+    assert pkt[BOOTP].xid == 0x1234
+    assert pkt[BOOTP].flags == 0x8000  # broadcast
+    assert pkt[IP].dst == "255.255.255.255"
+    assert pkt[UDP].sport == 68 and pkt[UDP].dport == 67
+
+
+def test_build_release_fields() -> None:
+    from scapy.layers.dhcp import BOOTP
+    from scapy.layers.inet import IP
+    from scapy.layers.l2 import Ether
+
+    pkt = Ether(
+        bytes(
+            dhcpprobe.build_release(
+                "02:00:00:aa:bb:cc", "192.168.1.50", "192.168.1.1", "02:00:00:00:00:01"
+            )
+        )
+    )
+    o = _opts(pkt)
+    assert o["message-type"] == 7  # release
+    assert o["server_id"] == "192.168.1.1"
+    assert pkt[BOOTP].ciaddr == "192.168.1.50"
+    assert pkt[BOOTP].flags == 0  # unicast
+    assert pkt[IP].src == "192.168.1.50"
+    assert pkt[IP].dst == "192.168.1.1"
+    assert pkt[Ether].dst == "02:00:00:00:00:01"
+
+
+def test_build_release_broadcast_fallback() -> None:
+    from scapy.layers.l2 import Ether
+
+    pkt = Ether(
+        bytes(dhcpprobe.build_release("02:00:00:aa:bb:cc", "192.168.1.50", "192.168.1.1", ""))
+    )
+    assert pkt[Ether].dst == "ff:ff:ff:ff:ff:ff"
