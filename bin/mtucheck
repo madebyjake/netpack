@@ -112,13 +112,24 @@ if [[ -n "${wan_payload:-}" && "$wan_payload" != "0" ]]; then
   wan_total=$((wan_payload + 28))
 fi
 
-printf 'gateway (%s): largest OK payload %s (approx IP size %s)\n' \
-  "$GW" "${gw_payload:-0}" "${gw_total}"
-printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
-  "$WAN" "${wan_payload:-0}" "${wan_total}"
-
 threshold=$((MAX - 40))
 # Expect near-full size; allow small header/tunnel slack
+color_mtu() {
+  local total=$1
+  if (( total == 0 )); then
+    color_status bad "0"
+  elif (( total < threshold )); then
+    color_status warn "$total"
+  else
+    color_status ok "$total"
+  fi
+}
+
+printf 'gateway (%s): largest OK payload %s (approx IP size %s)\n' \
+  "$GW" "${gw_payload:-0}" "$(color_mtu "$gw_total")"
+printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
+  "$WAN" "${wan_payload:-0}" "$(color_mtu "$wan_total")"
+
 reduced=0
 if (( gw_total < threshold || wan_total < threshold || gw_total == 0 || wan_total == 0 )); then
   reduced=1
