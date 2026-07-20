@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# portcheck — TCP service reachability by port
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+TIMEOUT=3
+
+usage() {
+  cat <<'EOF'
+portcheck — test TCP connectivity to specific service ports.
+
+Answers "can I reach this service from here": game servers, stream ingest,
+VPN endpoints, printers. Uses bash /dev/tcp connect() only — no payload is
+sent and nothing is installed.
+
+Result meanings:
+  OPEN         connect() succeeded; something is listening
+  REFUSED      host answered with RST — host is up, port closed
+  TIMEOUT      no answer — filtered by a firewall, or host down
+  DNS FAIL     name did not resolve (see dnscheck)
+  UNREACHABLE  no route to the host from here
+
+No UDP mode: without an application reply a bare UDP probe proves nothing.
+Use udp-loss for UDP delivery evidence.
+
+Usage:
+  portcheck [-t SECONDS] HOST PORT [PORT...]
+
+Options:
+  -t SECONDS    Per-port connect timeout (default: 3)
+  -h, --help    Show this help
+
+Exit codes:
+  0  all ports connected
+  1  usage or dependency error
+  2  one or more ports did not connect
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":t:h" opt; do
+  case "$opt" in
+    t) TIMEOUT=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+HOST=${1:-}
+[[ -n "$HOST" ]] || { usage >&2; exit 1; }
+shift
+[[ $# -ge 1 ]] || { usage >&2; exit 1; }
+
+# Accept both space- and comma-separated port lists.
+PORTS=()
+for arg in "$@"; do
+  for p in ${arg//,/ }; do
+    PORTS+=("$p")
+  done
+done
+
+require_uint timeout "$TIMEOUT" 1
+for p in "${PORTS[@]}"; do
+  require_uint port "$p" 1 65535
+done
+require_cmd timeout
+
+FAILED=0
+
+probe_port() {
+  local host=$1 port=$2
+  local err rc=0 t0 t1 ms=""
+  t0="${EPOCHREALTIME:-}"
+  # $0/$1 belong to the inner bash -c, not this shell
+  # shellcheck disable=SC2016
+  err="$(timeout "$TIMEOUT" bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "$port" 2>&1)" || rc=$?
+  t1="${EPOCHREALTIME:-}"
+  if [[ -n "$t0" && -n "$t1" ]]; then
+    ms="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.0fms", (b - a) * 1000 }')"
+  fi
+
+  if (( rc == 0 )); then
+    printf '  port %-5s  %s  %s\n' "$port" "$(color_status ok "OPEN   ")" "$ms"
+    return 0
+  fi
+  FAILED=$((FAILED + 1))
+  if (( rc == 124 )); then
+    printf '  port %-5s  %s\n' "$port" "$(color_status bad "TIMEOUT (filtered or host down)")"
+    return 0
+  fi
+  local low=${err,,}
+  case "$low" in
+    *"connection refused"*)
+      printf '  port %-5s  %s\n' "$port" \
+        "$(color_status warn "REFUSED (host up, port closed)")"
+      ;;
+    *"name or service not known"*|*"temporary failure in name resolution"*|*"nodename nor servname"*)
+      printf '  port %-5s  %s\n' "$port" "$(color_status bad "DNS FAIL (name did not resolve)")"
+      ;;
+    *"no route to host"*|*"network is unreachable"*)
+      printf '  port %-5s  %s\n' "$port" "$(color_status bad "UNREACHABLE (no route)")"
+      ;;
+    *)
+      # Strip bash's "bash: line N:" noise; keep the useful tail.
+      printf '  port %-5s  %s\n' "$port" "$(color_status bad "FAIL (${err##*: })")"
+      ;;
+  esac
+}
+
+header portcheck
+echo "host: ${HOST}  ports: ${PORTS[*]}  timeout: ${TIMEOUT}s"
+echo
+echo "=== probes ==="
+for p in "${PORTS[@]}"; do
+  probe_port "$HOST" "$p"
+done
+
+if (( FAILED == 0 )); then
+  verdict "all ${#PORTS[@]} port(s) connected."
+  echo "finished: $(timestamp_local)"
+  exit 0
+fi
+verdict "${FAILED} of ${#PORTS[@]} port(s) did not connect." \
+  "REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host."
+echo "finished: $(timestamp_local)"
+exit 2
