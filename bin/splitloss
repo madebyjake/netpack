@@ -114,8 +114,8 @@ wl="$(loss_pct "$LOG_WAN")" || {
   die "could not parse WAN ping summary in ${LOG_WAN}"
 }
 
-printf 'gateway (%s): %s%% packet loss\n' "$GW" "$gl"
-printf 'wan     (%s): %s%% packet loss\n' "$WAN" "$wl"
+printf 'gateway (%s): %s packet loss\n' "$GW" "$(color_loss_pct "$gl")"
+printf 'wan     (%s): %s packet loss\n' "$WAN" "$(color_loss_pct "$wl")"
 if [[ "$KEEP_LOGS" -eq 1 ]]; then
   echo "logs: ${LOG_GW} ${LOG_WAN}"
 else
