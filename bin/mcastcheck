@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""mcastcheck — verify multicast group delivery (IGMP snooping, Dante/NDI paths)."""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import socket
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+
+from netpack import report  # noqa: E402
+from netpack.mcast import HEADER_LEN, ProbeStats, decode_probe, encode_probe  # noqa: E402
+from netpack.net import NetError, iface_ipv4, resolve_iface  # noqa: E402
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_NONE = 2
+EXIT_LOSS = 3
+
+DEFAULT_GROUP = "239.192.77.77"
+DEFAULT_PORT = 7788
+
+
+def _usage() -> str:
+    return """\
+mcastcheck — verify multicast group delivery (IGMP snooping, Dante/NDI paths).
+
+recv joins GROUP:PORT and reports what arrives: per-source packet and bit
+rates for any traffic (Dante flows, NDI multicast, sACN), plus one-way loss,
+duplicates, and jitter when the traffic comes from 'mcastcheck send'.
+Joining makes IGMP-snooping switches forward the group to this port — that
+forwarding path is exactly what is under test.
+
+send transmits sequence-numbered probe datagrams to GROUP:PORT. Default TTL 1
+keeps probes on the local L2 segment; raise -T only for routed multicast.
+
+Pair workflow (one-way delivery proof, like testsrv/testcli):
+  receiving side:  mcastcheck recv
+  sending side:    mcastcheck send
+
+Verify a live production flow reaches this drop (passive apart from the join):
+  mcastcheck recv -g 239.255.12.34 -p 4321 -t 10
+
+The default group/port (239.192.77.77:7788, organization-local scope) avoids
+Dante's 239.255.0.0/16 media range. Do not 'send' to groups carrying live
+audio/video.
+
+Usage:
+  mcastcheck [recv] [-g GROUP] [-p PORT] [-i IFACE] [-t SECONDS] [--dump FILE]
+  mcastcheck send  [-g GROUP] [-p PORT] [-i IFACE] [-c COUNT] [-r PPS]
+                   [-s BYTES] [-T TTL]
+
+Options:
+  -g, --group ADDR    Multicast group (default: 239.192.77.77)
+  -p, --port PORT     UDP port (default: 7788)
+  -i, --iface IFACE   Interface (default: kernel default multicast route)
+  -t, --timeout SEC   recv listen window; Ctrl-C ends it early (default: 10)
+  -c, --count N       send: probe count (default: 500)
+  -r, --rate PPS      send: probes per second (default: 50)
+  -s, --size BYTES    send: datagram size (default: 200)
+  -T, --ttl TTL       send: multicast TTL (default: 1 = local segment only)
+  --dump FILE         Write JSON evidence to FILE
+  -h, --help          Show this help
+
+Exit codes:
+  0  recv: traffic received (probe loss <= 1%) / send: all probes sent
+  1  usage, socket, or interface error (send: also interrupted)
+  2  recv: no datagrams within the window
+  3  recv: probe traffic with > 1% loss
+"""
+
+
+def _mbit_s(nbytes: int, seconds: float) -> float:
+    return nbytes * 8 / seconds / 1e6
+
+
+def print_sources(sources: dict[tuple[str, int], dict[str, Any]], elapsed: float) -> None:
+    report.section(f"sources ({len(sources)})")
+    if not sources:
+        print(f"  ({report.color_status('bad', 'none')})")
+        return
+    by_traffic = sorted(sources.items(), key=lambda kv: kv[1]["packets"], reverse=True)
+    for (ip, port), entry in by_traffic:
+        rate = _mbit_s(entry["bytes"], elapsed)
+        avg = entry["bytes"] // max(entry["packets"], 1)
+        line = (
+            f"  {ip}:{port}  {entry['packets']} pkts  "
+            f"{rate:.2f} Mbit/s  avg {avg} B"
+        )
+        if entry["probe"] is not None:
+            s = entry["probe"].summary()
+            loss = f"{s['loss_pct']}%"
+            loss_c = report.color_status("bad" if s["loss_pct"] > 1 else "ok", loss)
+            line += (
+                f"  probe: loss {loss_c} ({s['received']}/{s['expected']}), "
+                f"jitter {s['jitter_ms']} ms, dup {s['duplicates']}"
+            )
+        print(line)
+
+
+def run_recv(
+    group: str,
+    port: int,
+    iface_label: str,
+    iface_ip: str | None,
+    window: float,
+    dump: str | None,
+) -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sources: dict[tuple[str, int], dict[str, Any]] = {}
+    start = time.monotonic()
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            # Binding the group address filters other traffic on the port.
+            sock.bind((group, port))
+        except OSError:
+            sock.bind(("", port))
+        mreq = socket.inet_aton(group) + socket.inet_aton(iface_ip or "0.0.0.0")
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        sock.settimeout(0.5)
+        report.progress(
+            f"listening {window:g}s on {group}:{port} (Ctrl-C ends the window early) ...",
+            file=sys.stderr,
+        )
+        deadline = start + window
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    data, addr = sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                now = time.monotonic()
+                entry = sources.setdefault(
+                    (addr[0], addr[1]), {"packets": 0, "bytes": 0, "probe": None}
+                )
+                entry["packets"] += 1
+                entry["bytes"] += len(data)
+                probe = decode_probe(data)
+                if probe is not None:
+                    if entry["probe"] is None:
+                        entry["probe"] = ProbeStats()
+                    entry["probe"].add(probe[0], probe[1], now)
+        except KeyboardInterrupt:
+            pass  # end the window early and report what was seen
+        elapsed = max(time.monotonic() - start, 0.001)
+    except OSError as exc:
+        print(
+            f"error: {exc} (multicast join failed; check interface and group)",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    finally:
+        sock.close()
+
+    print(f"mcastcheck — {report.timestamp_local()}")
+    print(f"mode: recv  group: {group}:{port}  iface: {iface_label}  window: {elapsed:.1f}s")
+    print_sources(sources, elapsed)
+
+    probe_losses = [
+        e["probe"].summary()["loss_pct"] for e in sources.values() if e["probe"] is not None
+    ]
+    worst = max(probe_losses) if probe_losses else None
+
+    if not sources:
+        code = EXIT_NONE
+        report.verdict(
+            f"no multicast datagrams for {group}:{port} within {elapsed:.0f}s.",
+            "Suspect IGMP snooping without a querier, wrong VLAN, or no active "
+            "sender; run 'mcastcheck send' from the far side to test the path.",
+        )
+    elif worst is not None and worst > 1:
+        code = EXIT_LOSS
+        report.verdict(
+            f"probe loss {worst}% on the multicast path.",
+            "Compare with unicast loss (udp-loss, splitloss); multicast-only loss "
+            "points at IGMP snooping, the querier, or switch multicast limits.",
+        )
+    elif worst is not None:
+        code = EXIT_OK
+        report.verdict(
+            f"{len(sources)} source(s); probe delivery clean (worst loss {worst}%)."
+        )
+    else:
+        code = EXIT_OK
+        report.verdict(
+            f"{len(sources)} source(s) delivering to {group}:{port}.",
+            "Check the rates above against the expected flow (Dante/NDI/sACN).",
+        )
+
+    if dump:
+        payload = {
+            "tool": "mcastcheck",
+            "mode": "recv",
+            "group": group,
+            "port": port,
+            "window_s": round(elapsed, 1),
+            "sources": [
+                {
+                    "ip": ip,
+                    "port": sport,
+                    "packets": e["packets"],
+                    "bytes": e["bytes"],
+                    "mbit_s": round(_mbit_s(e["bytes"], elapsed), 3),
+                    "probe": e["probe"].summary() if e["probe"] is not None else None,
+                }
+                for (ip, sport), e in sources.items()
+            ],
+            "verdict_code": code,
+        }
+        path = report.write_dump(dump, payload)
+        print(f"dump: {path}")
+
+    report.finished()
+    return code
+
+
+def run_send(
+    group: str,
+    port: int,
+    iface_label: str,
+    iface_ip: str | None,
+    count: int,
+    rate: int,
+    size: int,
+    ttl: int,
+    dump: str | None,
+) -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    interrupted = False
+    sent = 0
+    sent_bytes = 0
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+        if iface_ip:
+            sock.setsockopt(
+                socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip)
+            )
+        report.progress(
+            f"sending {count} probes to {group}:{port} at {rate}/s "
+            f"(~{count / rate:.0f}s) ...",
+            file=sys.stderr,
+        )
+        start = time.monotonic()
+        next_t = start
+        try:
+            for seq in range(1, count + 1):
+                now = time.monotonic()
+                if next_t > now:
+                    time.sleep(next_t - now)
+                payload = encode_probe(seq, time.time(), size)
+                sock.sendto(payload, (group, port))
+                sent += 1
+                sent_bytes += len(payload)
+                next_t += 1.0 / rate
+        except KeyboardInterrupt:
+            interrupted = True
+        elapsed = max(time.monotonic() - start, 0.001)
+    except OSError as exc:
+        print(f"error: {exc} (no route to {group}, or interface down)", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        sock.close()
+
+    print(f"mcastcheck — {report.timestamp_local()}")
+    print(f"mode: send  group: {group}:{port}  iface: {iface_label}  ttl: {ttl}")
+    report.section("sent")
+    print(
+        f"  {sent}/{count} probes ({sent_bytes} bytes) in {elapsed:.1f}s "
+        f"({sent / elapsed:.1f}/s)"
+    )
+    if interrupted:
+        report.warning(f"interrupted after {sent} of {count} probes")
+        report.finished()
+        return EXIT_ERROR
+
+    report.verdict(
+        f"{sent} probe(s) sent to {group}:{port}.",
+        "Read loss and jitter on the receiving side (mcastcheck recv).",
+    )
+
+    if dump:
+        payload = {
+            "tool": "mcastcheck",
+            "mode": "send",
+            "group": group,
+            "port": port,
+            "sent": sent,
+            "count": count,
+            "bytes": sent_bytes,
+            "rate_pps": rate,
+            "ttl": ttl,
+        }
+        path = report.write_dump(dump, payload)
+        print(f"dump: {path}")
+
+    report.finished()
+    return EXIT_OK
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("mode", nargs="?", default="recv")
+    parser.add_argument("-g", "--group", default=DEFAULT_GROUP)
+    parser.add_argument("-p", "--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("-i", "--iface")
+    parser.add_argument("-t", "--timeout", type=float, default=10.0)
+    parser.add_argument("-c", "--count", type=int, default=500)
+    parser.add_argument("-r", "--rate", type=int, default=50)
+    parser.add_argument("-s", "--size", type=int, default=200)
+    parser.add_argument("-T", "--ttl", type=int, default=1)
+    parser.add_argument("--dump")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.help:
+        print(_usage(), end="")
+        return EXIT_OK
+
+    if args.mode not in ("recv", "send"):
+        print(f"error: unknown mode: {args.mode} (use recv or send)", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        if not ipaddress.IPv4Address(args.group).is_multicast:
+            raise ValueError
+    except ValueError:
+        print(f"error: not an IPv4 multicast group: {args.group}", file=sys.stderr)
+        return EXIT_ERROR
+    if not 1 <= args.port <= 65535:
+        print("error: port must be 1-65535", file=sys.stderr)
+        return EXIT_ERROR
+    if args.timeout <= 0:
+        print("error: timeout must be positive", file=sys.stderr)
+        return EXIT_ERROR
+    if args.count < 1:
+        print("error: count must be >= 1", file=sys.stderr)
+        return EXIT_ERROR
+    if not 1 <= args.rate <= 5000:
+        print("error: rate must be 1-5000 probes/s", file=sys.stderr)
+        return EXIT_ERROR
+    if not HEADER_LEN <= args.size <= 1472:
+        print(f"error: size must be {HEADER_LEN}-1472 bytes", file=sys.stderr)
+        return EXIT_ERROR
+    if not 1 <= args.ttl <= 255:
+        print("error: ttl must be 1-255", file=sys.stderr)
+        return EXIT_ERROR
+
+    iface_ip: str | None = None
+    iface_label = "(default route)"
+    if args.iface:
+        try:
+            iface = resolve_iface(args.iface)
+        except NetError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        iface_ip = iface_ipv4(iface)
+        if not iface_ip:
+            print(f"error: no IPv4 address on {iface}", file=sys.stderr)
+            return EXIT_ERROR
+        iface_label = f"{iface} ({iface_ip})"
+
+    if args.mode == "recv":
+        return run_recv(
+            args.group, args.port, iface_label, iface_ip, args.timeout, args.dump
+        )
+    return run_send(
+        args.group,
+        args.port,
+        iface_label,
+        iface_ip,
+        args.count,
+        args.rate,
+        args.size,
+        args.ttl,
+        args.dump,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
