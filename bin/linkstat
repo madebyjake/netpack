@@ -184,14 +184,14 @@ def print_report(
     print(f"linkstat — {report.timestamp_local()}")
     print(f"iface: {iface}  sample: {timeout:g}s")
 
-    report.section("LINK")
+    report.section("link")
     if info:
         for key, val in info.items():
             print(f"  {key}: {val}")
     else:
         print("  (no link details available)")
 
-    report.section("UTILIZATION")
+    report.section("utilization")
     for name in BYTE_COUNTERS:
         label = name.split("_")[0]
         print(
@@ -199,13 +199,21 @@ def print_report(
             f"({byte_deltas[name] / 1e6:.1f} MB)"
         )
 
-    report.section("COUNTER DELTAS")
+    report.section("counter deltas")
     print(f"  {'counter':<16} {'delta':>12}")
     err = 0
     drp = 0
     for name in COUNTERS:
         d = max(0, deltas[name])  # ignore wrap/teardown negatives
-        print(f"  {name:<16} {deltas[name]:12d}")
+        delta = deltas[name]
+        if name in ERROR_KEYS and d > 0:
+            delta_s = report.color_status("bad", f"{delta:12d}")
+            print(f"  {name:<16} {delta_s}")
+        elif name in DROP_KEYS and d > 0:
+            delta_s = report.color_status("warn", f"{delta:12d}")
+            print(f"  {name:<16} {delta_s}")
+        else:
+            print(f"  {name:<16} {delta:12d}")
         if name in ERROR_KEYS:
             err += d
         if name in DROP_KEYS:
@@ -213,7 +221,12 @@ def print_report(
 
     if flaps > 0:
         label = "carrier_changes (wifi; informational)" if wireless else "carrier_changes"
-        print(f"  {label:<16} {flaps:12d}")
+        flap_s = (
+            report.color_status("warn", f"{flaps:12d}")
+            if wireless
+            else report.color_status("bad", f"{flaps:12d}")
+        )
+        print(f"  {label:<16} {flap_s}")
 
     notes: list[str] = []
     if err > 0 and drp > 0:
@@ -245,8 +258,8 @@ def print_report(
         return EXIT_FLAP
 
     if flaps > 0 and wireless:
-        print(
-            f"note: carrier_changes increased by {flaps} on a wireless interface "
+        report.note(
+            f"carrier_changes increased by {flaps} on a wireless interface "
             "(often roam/reassoc; not classified as a flap fault)."
         )
 
@@ -299,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     before = snap_counters(iface)
     bytes_before = snap_bytes(iface)
     carrier_before = read_carrier_changes(iface)
-    print(f"sampling {args.timeout:g}s on {iface} ...")
+    report.progress(f"sampling {args.timeout:g}s on {iface} ...")
     try:
         time.sleep(args.timeout)
     except KeyboardInterrupt:
