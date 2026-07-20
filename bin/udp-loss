@@ -78,8 +78,10 @@ for srv in "${SERVERS[@]}"; do
   rtts=()
   i=0
   while (( i < COUNT )); do
+    # dig exits non-zero on a lost/timed-out query — the very event being
+    # measured — so guard the pipeline or set -e/pipefail aborts at first loss.
     t="$(dig @"$srv" "$NAME" A +time=1 +tries=1 +stats 2>/dev/null \
-      | awk '/Query time:/ {print $4; exit}')"
+      | awk '/Query time:/ {print $4; exit}' || true)"
     if [[ -n "${t:-}" ]]; then
       ok=$((ok + 1))
       rtts+=("$t")
@@ -88,10 +90,10 @@ for srv in "${SERVERS[@]}"; do
     fi
     i=$((i + 1))
     if (( i % 25 == 0 || i == COUNT )); then
-      printf '\r%s: %d/%d' "$srv" "$i" "$COUNT" >&2
+      printf '\r%s' "$(progress "${srv}: ${i}/${COUNT}")" >&2
     fi
   done
-  printf '\r%s: %d/%d done\n' "$srv" "$COUNT" "$COUNT" >&2
+  printf '\r%s\n' "$(progress "${srv}: ${COUNT}/${COUNT} done")" >&2
 
   loss="$(awk -v f="$fail" -v c="$COUNT" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
   LOSS_PCTS+=("$loss")
@@ -108,11 +110,10 @@ for srv in "${SERVERS[@]}"; do
     stats="no replies"
   fi
 
-  printf '%-16s sent %-4d ok %-4d lost %-3d (%s%%)  %s\n' \
-    "$srv" "$COUNT" "$ok" "$fail" "$loss" "$stats"
+  printf '%-16s sent %-4d ok %-4d lost %-3d (%s)  %s\n' \
+    "$srv" "$COUNT" "$ok" "$fail" "$(color_loss_pct "$loss")" "$stats"
 done
 
-echo "--"
 lossy=0
 clean=0
 for p in "${LOSS_PCTS[@]}"; do
