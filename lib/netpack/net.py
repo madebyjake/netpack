@@ -109,6 +109,31 @@ def default_gateway() -> str | None:
     return None
 
 
+def iface_ipv4(iface: str) -> str | None:
+    """First IPv4 address on the interface, or None."""
+    try:
+        out = subprocess.check_output(
+            ["ip", "-o", "-4", "addr", "show", "dev", iface],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        PermissionError,
+        OSError,
+    ):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if "inet" in parts:
+            try:
+                return parts[parts.index("inet") + 1].split("/")[0]
+            except IndexError:
+                return None
+    return None
+
+
 def resolve_iface(explicit: str | None) -> str:
     if explicit:
         return validate_iface(explicit)
