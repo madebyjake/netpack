@@ -121,7 +121,7 @@ echo
 
 mapfile -t CONF < <(configured_resolvers || true)
 if [[ ${#CONF[@]} -eq 0 ]]; then
-  echo "warning: no nameserver entries in /etc/resolv.conf" >&2
+  warning "no nameserver entries in /etc/resolv.conf" >&2
 fi
 
 SERVERS=("${CONF[@]+"${CONF[@]}"}")
@@ -149,16 +149,13 @@ for s in "${SERVERS[@]}"; do
     label="public"
   fi
   IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
+  # Pad to the header's 10-char status column before coloring; ANSI codes
+  # would defeat printf's field width.
+  status_pad="$(printf '%-10s' "$status")"
   case "$status" in
-    NOERROR)
-      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_OK" "$status" "$NP_C_OFF" "$addrs" "$rtt"
-      ;;
-    FAIL)
-      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_BAD" "$status" "$NP_C_OFF" "$addrs" "$rtt"
-      ;;
-    *)
-      printf '%-16s %s%-10s%s %-40s %s\n' "$srv" "$NP_C_WARN" "$status" "$NP_C_OFF" "$addrs" "$rtt"
-      ;;
+    NOERROR) printf '%-16s %s %-40s %s\n' "$srv" "$(color_status ok "$status_pad")" "$addrs" "$rtt" ;;
+    FAIL)    printf '%-16s %s %-40s %s\n' "$srv" "$(color_status bad "$status_pad")" "$addrs" "$rtt" ;;
+    *)       printf '%-16s %s %-40s %s\n' "$srv" "$(color_status warn "$status_pad")" "$addrs" "$rtt" ;;
   esac
   LABELS+=("$label")
   STATUSES+=("$status")
