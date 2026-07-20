@@ -80,6 +80,15 @@ def _mbit_s(nbytes: int, seconds: float) -> float:
     return nbytes * 8 / seconds / 1e6
 
 
+def _source_rate(entry: dict[str, Any], elapsed: float) -> float:
+    """Average rate over the sender's active span, not the whole listen window,
+    so a flow that started late or ended early is not understated."""
+    span = entry["last"] - entry["first"]
+    if entry["packets"] > 1 and span > 0:
+        return _mbit_s(entry["bytes"], span)
+    return _mbit_s(entry["bytes"], elapsed)
+
+
 def print_sources(sources: dict[tuple[str, int], dict[str, Any]], elapsed: float) -> None:
     report.section(f"sources ({len(sources)})")
     if not sources:
@@ -87,7 +96,7 @@ def print_sources(sources: dict[tuple[str, int], dict[str, Any]], elapsed: float
         return
     by_traffic = sorted(sources.items(), key=lambda kv: kv[1]["packets"], reverse=True)
     for (ip, port), entry in by_traffic:
-        rate = _mbit_s(entry["bytes"], elapsed)
+        rate = _source_rate(entry, elapsed)
         avg = entry["bytes"] // max(entry["packets"], 1)
         line = (
             f"  {ip}:{port}  {entry['packets']} pkts  "
@@ -126,8 +135,7 @@ def run_recv(
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         sock.settimeout(0.5)
         report.progress(
-            f"listening {window:g}s on {group}:{port} (Ctrl-C ends the window early) ...",
-            file=sys.stderr,
+            f"listening {window:g}s on {group}:{port} (Ctrl-C ends the window early) ..."
         )
         deadline = start + window
         try:
@@ -137,9 +145,12 @@ def run_recv(
                 except socket.timeout:
                     continue
                 now = time.monotonic()
-                entry = sources.setdefault(
-                    (addr[0], addr[1]), {"packets": 0, "bytes": 0, "probe": None}
-                )
+                key = (addr[0], addr[1])
+                entry = sources.get(key)
+                if entry is None:
+                    entry = {"packets": 0, "bytes": 0, "first": now, "last": now, "probe": None}
+                    sources[key] = entry
+                entry["last"] = now
                 entry["packets"] += 1
                 entry["bytes"] += len(data)
                 probe = decode_probe(data)
@@ -207,7 +218,7 @@ def run_recv(
                     "port": sport,
                     "packets": e["packets"],
                     "bytes": e["bytes"],
-                    "mbit_s": round(_mbit_s(e["bytes"], elapsed), 3),
+                    "mbit_s": round(_source_rate(e, elapsed), 3),
                     "probe": e["probe"].summary() if e["probe"] is not None else None,
                 }
                 for (ip, sport), e in sources.items()
@@ -244,8 +255,7 @@ def run_send(
             )
         report.progress(
             f"sending {count} probes to {group}:{port} at {rate}/s "
-            f"(~{count / rate:.0f}s) ...",
-            file=sys.stderr,
+            f"(~{count / rate:.0f}s) ..."
         )
         start = time.monotonic()
         next_t = start
@@ -338,8 +348,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout <= 0:
         print("error: timeout must be positive", file=sys.stderr)
         return EXIT_ERROR
-    if args.count < 1:
-        print("error: count must be >= 1", file=sys.stderr)
+    if not 1 <= args.count <= 1000000:
+        print("error: count must be 1-1000000", file=sys.stderr)
         return EXIT_ERROR
     if not 1 <= args.rate <= 5000:
         print("error: rate must be 1-5000 probes/s", file=sys.stderr)
