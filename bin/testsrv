@@ -66,14 +66,14 @@ nft_sets_present() {
 
 open_port() {
   if ! command -v nft >/dev/null 2>&1; then
-    echo "warning: nft not found; firewall unchanged" >&2
+    warning "nft not found; firewall unchanged" >&2
     return 0
   fi
   if [[ "$(id -u)" -ne 0 ]]; then
     die "cannot verify nft sets without root; re-run with sudo"
   fi
   if ! nft_sets_present; then
-    echo "warning: nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2
+    warning "nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2
     return 0
   fi
   if ! nft add element inet filter test_tcp "{ ${PORT} }"; then
