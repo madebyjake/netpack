@@ -61,8 +61,9 @@ def warning(message: str, file: TextIO | None = None) -> None:
 
 
 def progress(message: str, file: TextIO | None = None) -> None:
-    """Amber progress / sampling line (stdout by default)."""
-    dest = file if file is not None else sys.stdout
+    """Amber progress / sampling line (stderr by default, matching the bash
+    helper, so piped or redirected evidence stays free of progress noise)."""
+    dest = file if file is not None else sys.stderr
     use = dest.isatty() and not os.environ.get("NO_COLOR")
     c_warn = "\033[38;5;214m" if use else ""
     c_off = "\033[0m" if use else ""
