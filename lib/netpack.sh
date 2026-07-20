@@ -120,6 +120,71 @@ private_tmpdir() {
   mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX"
 }
 
+# Stdout report-content colors: only when stdout is a TTY, so redirected or
+# piped evidence stays plain text. Honor NO_COLOR.
+# Green = ok, red = bad/missing, amber = warn/note, blue = VERDICT label.
+NP_C_OK='' NP_C_BAD='' NP_C_WARN='' NP_C_VERDICT='' NP_C_OFF=''
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  NP_C_OK=$'\033[32m'
+  NP_C_BAD=$'\033[31m'
+  NP_C_WARN=$'\033[38;5;214m'
+  NP_C_VERDICT=$'\033[34m'
+  NP_C_OFF=$'\033[0m'
+fi
+
+# Separate palette for stderr-only progress: colored when stderr is a TTY even
+# if stdout is piped (keeps `tool | tee` progress amber without leaking codes
+# into the captured stdout).
+NP_CE_WARN='' NP_CE_OFF=''
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  NP_CE_WARN=$'\033[38;5;214m'
+  NP_CE_OFF=$'\033[0m'
+fi
+
+# color_status ok|bad|warn [text] — colored status token.
+# Defaults: OK / MISSING / (text required for warn).
+color_status() {
+  local kind=$1 text
+  case "$kind" in
+    ok)   text=${2:-OK};      printf '%s%s%s' "$NP_C_OK" "$text" "$NP_C_OFF" ;;
+    bad)  text=${2:-MISSING}; printf '%s%s%s' "$NP_C_BAD" "$text" "$NP_C_OFF" ;;
+    warn) text=${2:?};        printf '%s%s%s' "$NP_C_WARN" "$text" "$NP_C_OFF" ;;
+    *)    printf '%s' "${2:-$1}" ;;
+  esac
+}
+
+# Amber note: / warning: lines. Colored by stdout's TTY state (NP_C_WARN); when
+# a caller redirects these to stderr the color is dropped rather than risk
+# leaking codes into a redirected stdout.
+note() {
+  printf '%snote: %s%s\n' "$NP_C_WARN" "$*" "$NP_C_OFF"
+}
+
+warning() {
+  printf '%swarning: %s%s\n' "$NP_C_WARN" "$*" "$NP_C_OFF"
+}
+
+# Amber progress text (no trailing newline); caller supplies \\r / newline.
+# Written only to stderr, so it uses the stderr palette.
+progress() {
+  printf '%s%s%s' "$NP_CE_WARN" "$*" "$NP_CE_OFF"
+}
+
+# Color a loss percentage: green if <=1, red if >1 (matches tool thresholds).
+color_loss_pct() {
+  local p=$1
+  if awk -v p="$p" 'BEGIN { exit !(p > 1) }'; then
+    color_status bad "${p}%"
+  else
+    color_status ok "${p}%"
+  fi
+}
+
+section() {
+  echo
+  echo "=== $1 ==="
+}
+
 verdict() {
   echo "--"
   printf '%sVERDICT:%s %s\n' "$NP_C_VERDICT" "$NP_C_OFF" "$1"
@@ -136,27 +201,4 @@ timestamp_local() {
 # Print a standard tool report header: "name — <iso-local>"
 header() {
   echo "$1 — $(timestamp_local)"
-}
-
-# Status colors when stdout is a TTY; honor NO_COLOR.
-# Green = ok, red = bad/missing, amber = warn/other, blue = VERDICT label.
-NP_C_OK='' NP_C_BAD='' NP_C_WARN='' NP_C_VERDICT='' NP_C_OFF=''
-if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-  NP_C_OK=$'\033[32m'
-  NP_C_BAD=$'\033[31m'
-  NP_C_WARN=$'\033[38;5;214m'
-  NP_C_VERDICT=$'\033[34m'
-  NP_C_OFF=$'\033[0m'
-fi
-
-# color_status ok|bad|warn [text] — colored status token.
-# Defaults: OK / MISSING / (text required for warn).
-color_status() {
-  local kind=$1 text
-  case "$kind" in
-    ok)   text=${2:-OK};      printf '%s%s%s' "$NP_C_OK" "$text" "$NP_C_OFF" ;;
-    bad)  text=${2:-MISSING}; printf '%s%s%s' "$NP_C_BAD" "$text" "$NP_C_OFF" ;;
-    warn) text=${2:?};        printf '%s%s%s' "$NP_C_WARN" "$text" "$NP_C_OFF" ;;
-    *)    printf '%s' "${2:-$1}" ;;
-  esac
 }
