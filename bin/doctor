@@ -44,19 +44,19 @@ have() {
 check_cmd() {
   local name=$1
   if have "$name"; then
-    printf '  %-14s OK\n' "$name"
+    printf '  %-14s %s\n' "$name" "$(color_status ok)"
     return 0
   fi
-  printf '  %-14s MISSING\n' "$name"
+  printf '  %-14s %s\n' "$name" "$(color_status bad)"
   return 1
 }
 
 check_optional() {
   local name=$1
   if have "$name"; then
-    printf '  %-14s OK\n' "$name"
+    printf '  %-14s %s\n' "$name" "$(color_status ok)"
   else
-    printf '  %-14s absent (optional)\n' "$name"
+    printf '  %-14s %s\n' "$name" "$(color_status warn "absent (optional)")"
   fi
 }
 
@@ -68,47 +68,44 @@ echo "root: $(netpack_root)"
 echo "bin:  $(netpack_bin)"
 echo "user: $(id -un) (uid $(id -u))"
 if [[ "$(id -u)" -eq 0 ]]; then
-  echo "note: running as root (not required for doctor)"
+  printf '%snote: running as root (not required for doctor)%s\n' "$NP_C_BAD" "$NP_C_OFF"
 fi
 echo
 
-echo "=== runtime ==="
+section "runtime"
 # bash 5.x is assumed but nothing 5-specific is used; warn without failing.
 if (( BASH_VERSINFO[0] >= 5 )); then
-  printf '  %-14s OK (%s)\n' "bash" "${BASH_VERSION}"
+  printf '  %-14s %s (%s)\n' "bash" "$(color_status ok)" "${BASH_VERSION}"
 else
-  printf '  %-14s OLD (%s; 5.x assumed)\n' "bash" "${BASH_VERSION}"
+  printf '  %-14s %s\n' "bash" "$(color_status warn "OLD (${BASH_VERSION}; 5.x assumed)")"
 fi
 if have python3; then
   pyver="$(python3 -c 'import platform; print(platform.python_version())')"
   if python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
-    printf '  %-14s OK (%s)\n' "python3>=3.10" "$pyver"
+    printf '  %-14s %s (%s)\n' "python3>=3.10" "$(color_status ok)" "$pyver"
   else
-    printf '  %-14s TOO OLD (%s; need >= 3.10)\n' "python3" "$pyver"
+    printf '  %-14s %s\n' "python3" "$(color_status warn "TOO OLD (${pyver}; need >= 3.10)")"
     MISSING=$((MISSING + 1))
   fi
 else
-  printf '  %-14s MISSING\n' "python3"
+  printf '  %-14s %s\n' "python3" "$(color_status bad)"
   MISSING=$((MISSING + 1))
 fi
-echo
 
-echo "=== launcher ==="
+section "launcher"
 if [[ -x "$(netpack_bin)/netpack" ]] && [[ -e "$(netpack_bin)/npk" ]]; then
-  echo "  netpack/npk   OK"
+  printf '  %-14s %s\n' "netpack/npk" "$(color_status ok)"
 else
-  echo "  netpack/npk   MISSING or not executable"
+  printf '  %-14s %s\n' "netpack/npk" "$(color_status bad "MISSING or not executable")"
   MISSING=$((MISSING + 1))
 fi
-echo
 
-echo "=== shared commands ==="
+section "shared commands"
 for c in ip ping dig awk sort; do
   check_cmd "$c" || MISSING=$((MISSING + 1))
 done
-echo
 
-echo "=== per-tool requirements ==="
+section "per-tool requirements"
 
 tool_header() {
   printf '%s (sudo: %s)\n' "$1" "$2"
@@ -117,9 +114,9 @@ tool_header() {
 tool_header "dhcpprobe" "yes"
 check_cmd python3 || MISSING=$((MISSING + 1))
 if have python3 && python3 -c 'import scapy' 2>/dev/null; then
-  printf '  %-14s OK\n' "scapy"
+  printf '  %-14s %s\n' "scapy" "$(color_status ok)"
 else
-  printf '  %-14s MISSING\n' "scapy"
+  printf '  %-14s %s\n' "scapy" "$(color_status bad)"
   MISSING=$((MISSING + 1))
 fi
 echo
@@ -137,6 +134,14 @@ check_optional arp-scan
 check_optional lldpcli
 echo
 
+tool_header "wifiscan" "yes"
+check_cmd iw || MISSING=$((MISSING + 1))
+echo
+
+tool_header "discover" "no"
+check_cmd python3 || MISSING=$((MISSING + 1))
+echo
+
 tool_header "splitloss" "no"
 check_cmd ping || MISSING=$((MISSING + 1))
 check_cmd ip || MISSING=$((MISSING + 1))
@@ -148,6 +153,10 @@ echo
 
 tool_header "webcheck" "no"
 check_cmd curl || MISSING=$((MISSING + 1))
+echo
+
+tool_header "portcheck" "no"
+check_cmd timeout || MISSING=$((MISSING + 1))
 echo
 
 tool_header "mtucheck" "no"
@@ -165,6 +174,10 @@ tool_header "udp-loss" "no"
 check_cmd dig || MISSING=$((MISSING + 1))
 echo
 
+tool_header "mcastcheck" "no"
+check_cmd python3 || MISSING=$((MISSING + 1))
+echo
+
 tool_header "ringcap" "yes"
 check_cmd tcpdump || MISSING=$((MISSING + 1))
 echo
@@ -178,7 +191,6 @@ tool_header "testcli" "no"
 check_cmd iperf3 || MISSING=$((MISSING + 1))
 echo
 
-echo "--"
 if (( MISSING > 0 )); then
   verdict "${MISSING} required dependency check(s) failed." \
     "Install missing packages (see README) and re-run doctor."

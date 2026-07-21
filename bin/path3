@@ -17,6 +17,9 @@ usage() {
 path3 — run mtr against a target in ICMP, UDP, and TCP modes.
 
 Compares final-hop loss across protocols. Probe volume is COUNT x 3 modes.
+The UDP mode sweeps destination ports and the TCP mode sends repeated SYNs,
+which firewalls and IDS may flag as a port scan; probe only networks you are
+authorized to test.
 Tries unprivileged first; if a mode fails (common without CAP_NET_RAW on
 UDP/TCP), re-run with sudo.
 
@@ -96,23 +99,29 @@ printf '%-5s %-40s %-10s %s\n' "mode" "host" "loss" "avg"
 for m in icmp udp tcp; do
   f="${DIR}/${m}.txt"
   if [[ ! -s "$f" ]]; then
-    printf '%-5s %-40s %-10s %s\n' "$m" "-" "-" "-"
+    printf '%-5s %-40s %-10s %s\n' "$m" "-" "$(color_status bad "-")" "-"
     continue
   fi
   IFS=$'\t' read -r host loss avg <<<"$(summarize_final "$f")"
-  printf '%-5s %-40s %-10s %s\n' "$m" "${host:--}" "${loss:--}" "${avg:--}"
+  loss_disp="${loss:--}"
+  if [[ "$loss_disp" != "-" ]]; then
+    # summarize_final returns e.g. 4.0%; strip % for threshold helper.
+    loss_num="${loss_disp%%%}"
+    loss_disp="$(color_loss_pct "$loss_num")"
+  fi
+  printf '%-5s %-40s %-10s %s\n' "$m" "${host:--}" "$loss_disp" "${avg:--}"
 done
 
-echo "--"
-cat <<'EOF'
-Prefer final-hop loss that is corroborated across protocols.
-Intermediate-only loss is often control-plane deprioritization, not forwarding loss.
-EOF
-
-echo "finished: $(timestamp_local)"
 if (( FAILED_MODES > 0 )); then
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "${FAILED_MODES} mtr mode(s) failed; re-run with sudo (CAP_NET_RAW may be required)"
+    verdict "${FAILED_MODES} mtr mode(s) failed." \
+      "Re-run with sudo (CAP_NET_RAW may be required)."
+  else
+    verdict "${FAILED_MODES} mtr mode(s) failed or produced unusable output."
   fi
-  die "${FAILED_MODES} mtr mode(s) failed or produced unusable output"
+  echo "finished: $(timestamp_local)"
+  exit 1
 fi
+verdict "all three modes produced usable reports." \
+  "Prefer final-hop loss corroborated across protocols; intermediate-only loss is often control-plane deprioritization."
+echo "finished: $(timestamp_local)"

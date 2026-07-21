@@ -11,6 +11,8 @@ DURATION=30
 UDP=0
 BANDWIDTH="5M"
 LENGTH=200
+STREAMS=1
+REVERSE=0
 HOST=""
 
 usage() {
@@ -27,8 +29,14 @@ Typical pair:
 UDP mode uses a controlled rate suitable for game-like loss checks. The UDP
 report Lost/Total is one-way loss on the path under test.
 
+-R reverses direction (the server sends): run once without and once with -R
+to evidence both directions without swapping machines. A single TCP stream
+often cannot fill a high-rate path; use -P to run parallel streams (WAN
+throughput proof against a cloud iperf3 host typically needs -P 4 or more).
+
 Usage:
-  testcli [-p PORT] [-t SECONDS] [-u] [-b BANDWIDTH] [-l LENGTH] HOST
+  testcli [-p PORT] [-t SECONDS] [-u] [-b BANDWIDTH] [-l LENGTH] [-P STREAMS]
+          [-R] HOST
 
 Options:
   -p PORT        Server port (default: 5201)
@@ -36,6 +44,8 @@ Options:
   -u             UDP mode (default: TCP)
   -b BANDWIDTH   UDP target bitrate (default: 5M); ignored for TCP
   -l LENGTH      UDP payload length (default: 200); ignored for TCP
+  -P STREAMS     Parallel streams (default: 1)
+  -R             Reverse: server sends (download-direction evidence)
   -h, --help     Show this help
 
 Exit codes:
@@ -49,13 +59,15 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":p:t:ub:l:h" opt; do
+while getopts ":p:t:ub:l:P:Rh" opt; do
   case "$opt" in
     p) PORT=$OPTARG ;;
     t) DURATION=$OPTARG ;;
     u) UDP=1 ;;
     b) BANDWIDTH=$OPTARG ;;
     l) LENGTH=$OPTARG ;;
+    P) STREAMS=$OPTARG ;;
+    R) REVERSE=1 ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -67,16 +79,28 @@ HOST=${1:-}
 require_uint port "$PORT" 1 65535
 require_uint duration "$DURATION" 1
 require_uint length "$LENGTH" 1
+require_uint streams "$STREAMS" 1 128
 require_cmd iperf3
 
+EXTRA=()
+DIRECTION="upload (client sends)"
+if [[ "$REVERSE" -eq 1 ]]; then
+  EXTRA+=(-R)
+  DIRECTION="download (server sends)"
+fi
+if (( STREAMS > 1 )); then
+  EXTRA+=(-P "$STREAMS")
+fi
+
 header testcli
-echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s"
+echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s  direction: ${DIRECTION}"
 if [[ "$UDP" -eq 1 ]]; then
-  echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}"
-  echo "warning: generates significant traffic"
-  exec iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" -t "$DURATION"
+  echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}  streams ${STREAMS}"
+  warning "generates significant traffic"
+  exec iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" \
+    "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION"
 else
-  echo "mode: TCP"
-  echo "warning: generates significant traffic"
-  exec iperf3 -c "$HOST" -p "$PORT" -t "$DURATION"
+  echo "mode: TCP  streams ${STREAMS}"
+  warning "generates significant traffic"
+  exec iperf3 -c "$HOST" -p "$PORT" "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION"
 fi

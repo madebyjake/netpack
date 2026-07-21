@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import random
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,12 +16,19 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import report  # noqa: E402
 from netpack.dhcp import diff_offers  # noqa: E402
-from netpack.net import NetError, iface_is_up, require_root, resolve_iface  # noqa: E402
+from netpack.net import (  # noqa: E402
+    NetError,
+    iface_is_up,
+    list_ifaces,
+    require_root,
+    resolve_iface,
+)
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NONE = 2
 EXIT_MULTI = 3
+EXIT_NOACK = 4
 
 PARAM_REQUEST_LIST = [1, 3, 6, 15, 28, 51, 54, 58, 59, 119, 121]
 
@@ -29,30 +37,40 @@ def _usage() -> str:
     return """\
 dhcpprobe — broadcast DHCPDISCOVER and report every server that answers.
 
-Sends DHCPDISCOVER only (no REQUEST/ACK). Does not bind a lease.
+By default sends DHCPDISCOVER only (no REQUEST/ACK) and does not bind a lease.
 Generates broadcast traffic on the selected interface.
 
-Use the VLAN sub-interface when DHCP is tagged (for example eth0.100).
-Sniffing a trunk parent may miss VLAN-tagged offers.
+With --full, completes DORA against the first offer (REQUEST, await ACK/NAK)
+and immediately RELEASEs the lease. This briefly binds an address and appears
+in server lease logs; use it to distinguish "server offers but never ACKs"
+(full pool, reservation conflict, relay breakage) from a healthy server.
+
+Use the VLAN sub-interface when DHCP is tagged (for example eth0.100), or pass
+-V VID to create a temporary sub-interface that is removed on exit (an existing
+sub-interface is used as-is and left in place). Sniffing a trunk parent may
+miss VLAN-tagged offers.
 
 Some servers briefly reserve an offered address after DISCOVER; avoid rapid
 repeated runs against small pools.
 
 Usage:
-  dhcpprobe [-i IFACE] [-t SECONDS] [--dump FILE] [-v]
+  dhcpprobe [-i IFACE] [-V VLAN_ID] [-t SECONDS] [--full] [--dump FILE] [-v]
 
 Options:
   -i, --iface IFACE   Interface (default: default-route iface)
+  -V, --vlan VID      Probe on VLAN sub-interface IFACE.VID (created if needed)
   -t, --timeout SEC   Listen window after DISCOVER (default: 5)
+  --full              Complete DORA against the first offer, then RELEASE
   --dump FILE         Write JSON evidence to FILE
   -v, --verbose       Diagnostics on stderr
   -h, --help          Show this help
 
 Exit codes:
-  0  single DHCP server
+  0  single DHCP server (and, with --full, lease ACKed and released)
   1  usage, dependency, or permission error
   2  no DHCP response
   3  multiple DHCP servers
+  4  offer received but REQUEST not ACKed (--full only)
 """
 
 
@@ -161,12 +179,165 @@ def build_discover(iface: str, mac: str):
     return pkt, xid
 
 
+def build_request(mac: str, xid: int, offered_ip: str, server_id: str):
+    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
+    from scapy.layers.inet import IP, UDP  # type: ignore
+    from scapy.layers.l2 import Ether  # type: ignore
+    from scapy.utils import mac2str  # type: ignore
+
+    chaddr = mac2str(mac)
+    return (
+        Ether(dst="ff:ff:ff:ff:ff:ff", src=mac)
+        / IP(src="0.0.0.0", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=chaddr, xid=xid, flags=0x8000)
+        / DHCP(
+            options=[
+                ("message-type", "request"),
+                ("requested_addr", offered_ip),
+                ("server_id", server_id),
+                ("param_req_list", PARAM_REQUEST_LIST),
+                ("client_id", b"\x01" + chaddr),
+                "end",
+            ]
+        )
+    )
+
+
+def build_release(mac: str, leased_ip: str, server_id: str, server_mac: str):
+    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
+    from scapy.layers.inet import IP, UDP  # type: ignore
+    from scapy.layers.l2 import Ether  # type: ignore
+    from scapy.utils import mac2str  # type: ignore
+
+    chaddr = mac2str(mac)
+    return (
+        Ether(dst=server_mac or "ff:ff:ff:ff:ff:ff", src=mac)
+        / IP(src=leased_ip, dst=server_id)
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=chaddr, xid=random.randint(1, 0xFFFFFFFF), ciaddr=leased_ip)
+        / DHCP(
+            options=[
+                ("message-type", "release"),
+                ("server_id", server_id),
+                ("client_id", b"\x01" + chaddr),
+                "end",
+            ]
+        )
+    )
+
+
+def _msg_type(pkt: Any) -> Any:
+    from scapy.layers.dhcp import DHCP  # type: ignore
+
+    for item in pkt[DHCP].options:
+        if isinstance(item, tuple) and item[0] == "message-type":
+            return item[1]
+    return None
+
+
+def complete_dora(
+    iface: str, mac: str, xid: int, offer: dict[str, Any], timeout: float, verbose: bool
+) -> dict[str, Any]:
+    """REQUEST the first offer, await ACK/NAK, and RELEASE any bound lease."""
+    from scapy.layers.dhcp import DHCP  # type: ignore
+    from scapy.sendrecv import sendp, sniff  # type: ignore
+
+    offered_ip = offer.get("offered_ip")
+    server_id = offer.get("server_id")
+    if not offered_ip or not server_id:
+        return {"state": "skipped", "reason": "offer missing offered_ip or server_id"}
+
+    req = build_request(mac, xid, offered_ip, server_id)
+    result: dict[str, Any] = {
+        "state": "timeout",
+        "requested_ip": offered_ip,
+        "server_id": server_id,
+        "released": False,
+    }
+
+    def is_reply(p: Any) -> bool:
+        if not p.haslayer(DHCP):
+            return False
+        bootp = p.getlayer("BOOTP")
+        if bootp is None or int(getattr(bootp, "xid", 0)) != xid:
+            return False
+        return _msg_type(p) in (5, "ack", 6, "nak")
+
+    def on_started() -> None:
+        if verbose:
+            print(f"sending DHCPREQUEST for {offered_ip} to {server_id}", file=sys.stderr)
+        sendp(req, iface=iface, verbose=0)
+
+    batch = sniff(
+        iface=iface,
+        filter="udp and (port 67 or port 68)",
+        timeout=timeout,
+        lfilter=is_reply,
+        store=True,
+        count=1,
+        started_callback=on_started,
+    )
+    if not batch:
+        return result
+
+    reply = batch[0]
+    if _msg_type(reply) in (5, "ack"):
+        result["state"] = "ack"
+        result["lease"] = parse_offer(reply)
+        sendp(
+            build_release(mac, offered_ip, server_id, offer.get("server_mac") or ""),
+            iface=iface,
+            verbose=0,
+        )
+        result["released"] = True
+        if verbose:
+            print(f"released {offered_ip}", file=sys.stderr)
+    else:
+        result["state"] = "nak"
+        for item in reply[DHCP].options:
+            if isinstance(item, tuple) and item[0] in ("error_message", "message"):
+                result["message"] = _opt_str(item[1])
+                break
+    return result
+
+
+def vlan_setup(base: str, vid: int) -> tuple[str, bool]:
+    """Return (sub_iface, created). An existing sub-interface is reused, not touched."""
+    sub = f"{base}.{vid}"
+    if sub in list_ifaces():
+        return sub, False
+    subprocess.run(
+        ["ip", "link", "add", "link", base, "name", sub, "type", "vlan", "id", str(vid)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # The interface now exists; if bringing it up fails, roll back the add so we
+    # never leak a half-created sub-interface (the caller's teardown only runs
+    # once vlan_setup has returned created=True).
+    try:
+        subprocess.run(
+            ["ip", "link", "set", sub, "up"], check=True, capture_output=True, text=True
+        )
+    except (subprocess.CalledProcessError, OSError):
+        vlan_teardown(sub)
+        raise
+    return sub, True
+
+
+def vlan_teardown(sub: str) -> None:
+    subprocess.run(["ip", "link", "del", sub], check=False, capture_output=True)
+
+
 def iface_mac(iface: str) -> str:
     path = Path(f"/sys/class/net/{iface}/address")
     return path.read_text(encoding="utf-8").strip().lower()
 
 
-def collect_offers(iface: str, timeout: float, verbose: bool) -> list[dict[str, Any]]:
+def collect_offers(
+    iface: str, timeout: float, verbose: bool
+) -> tuple[list[dict[str, Any]], int, str]:
     from scapy.layers.dhcp import DHCP  # type: ignore
     from scapy.sendrecv import sendp, sniff  # type: ignore
 
@@ -210,18 +381,50 @@ def collect_offers(iface: str, timeout: float, verbose: bool) -> list[dict[str, 
         if verbose:
             print(f"offer from {key}", file=sys.stderr)
 
-    return list(offers.values())
+    return list(offers.values()), xid, mac
 
 
-def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> None:
+def print_dora(dora: dict[str, Any], timeout: float) -> None:
+    report.section("DORA (--full)")
+    state = dora.get("state")
+    if state == "skipped":
+        print(f"  skipped: {dora.get('reason')}")
+        return
+    print(f"  requested: {dora.get('requested_ip')} from {dora.get('server_id')}")
+    if state == "ack":
+        lease = dora.get("lease") or {}
+        lease_s = lease.get("lease_seconds")
+        print(
+            f"  result: {report.color_status('ok', 'ACK')} — lease "
+            f"{lease.get('offered_cidr') or dora.get('requested_ip')}"
+            f"{f' ({lease_s}s)' if lease_s is not None else ''}, released"
+        )
+    elif state == "nak":
+        msg = dora.get("message")
+        print(
+            f"  result: {report.color_status('bad', 'NAK')}"
+            f"{f' — {msg}' if msg else ''}"
+        )
+    else:
+        print(
+            f"  result: {report.color_status('bad', f'no ACK within {timeout:g}s')}"
+        )
+
+
+def print_report(
+    iface: str,
+    timeout: float,
+    offers: list[dict[str, Any]],
+    dora: dict[str, Any] | None = None,
+) -> None:
     print(f"dhcpprobe — {report.timestamp_local()}")
     print(f"iface: {iface}  timeout: {timeout:g}s")
     if not iface_is_up(iface):
-        print("note: interface is administratively or operatively down")
+        report.note("interface is administratively or operatively down")
 
-    report.section(f"OFFERS ({len(offers)})")
+    report.section(f"offers ({len(offers)})")
     if not offers:
-        print("  (none)")
+        print(f"  ({report.color_status('bad', 'none')})")
     for i, o in enumerate(offers, 1):
         print(
             f"  [{i}] Server {o.get('server_id') or '-'}  "
@@ -239,9 +442,12 @@ def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> No
 
     diffs = diff_offers(offers)
     if diffs:
-        report.section("DIFFS")
+        report.section("diffs")
         for line in diffs:
             print(line)
+
+    if dora is not None:
+        print_dora(dora, timeout)
 
     if len(offers) == 0:
         report.verdict(
@@ -249,7 +455,14 @@ def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> No
             "Confirm interface/VLAN membership and that a DHCP service is expected here.",
         )
     elif len(offers) == 1:
-        report.verdict("single DHCP server responded.")
+        if dora is not None and dora.get("state") != "ack":
+            report.verdict(
+                "server offered an address but did not ACK the REQUEST.",
+                "Suspect a full pool, reservation conflict, or relay breakage; "
+                "check the server's lease log.",
+            )
+        else:
+            report.verdict("single DHCP server responded.")
     else:
         report.verdict(
             f"{len(offers)} DHCP servers responded on this segment.",
@@ -260,7 +473,9 @@ def print_report(iface: str, timeout: float, offers: list[dict[str, Any]]) -> No
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-i", "--iface")
+    parser.add_argument("-V", "--vlan", type=int)
     parser.add_argument("-t", "--timeout", type=float, default=5.0)
+    parser.add_argument("--full", action="store_true")
     parser.add_argument("--dump")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
@@ -272,6 +487,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.timeout <= 0:
         print("error: timeout must be positive", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.vlan is not None and not 1 <= args.vlan <= 4094:
+        print("error: VLAN ID must be 1-4094", file=sys.stderr)
         return EXIT_ERROR
 
     try:
@@ -296,49 +515,70 @@ def main(argv: list[str] | None = None) -> int:
         conf.verb = 0
     except (ImportError, AttributeError):
         if args.verbose:
-            print("warning: could not set scapy verbosity", file=sys.stderr)
+            report.warning("could not set scapy verbosity", file=sys.stderr)
+
+    vlan_created = False
+    if args.vlan is not None:
+        try:
+            iface, vlan_created = vlan_setup(iface, args.vlan)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            detail = getattr(exc, "stderr", "") or str(exc)
+            print(f"error: could not set up {iface}.{args.vlan}: {detail.strip()}", file=sys.stderr)
+            return EXIT_ERROR
+        if vlan_created:
+            print(f"created VLAN sub-interface {iface} (removed on exit)", file=sys.stderr)
 
     try:
-        offers = collect_offers(iface, args.timeout, args.verbose)
-    except KeyboardInterrupt:
-        print("error: interrupted", file=sys.stderr)
-        return EXIT_ERROR
-    except PermissionError:
-        print("error: permission denied sending/sniffing; re-run with sudo", file=sys.stderr)
-        return EXIT_ERROR
-    except OSError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        try:
+            offers, xid, mac = collect_offers(iface, args.timeout, args.verbose)
+            dora: dict[str, Any] | None = None
+            if args.full and offers:
+                dora = complete_dora(iface, mac, xid, offers[0], args.timeout, args.verbose)
+        except KeyboardInterrupt:
+            print("error: interrupted", file=sys.stderr)
+            return EXIT_ERROR
+        except PermissionError:
+            print(
+                "error: permission denied sending/sniffing; re-run with sudo",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
 
-    print_report(iface, args.timeout, offers)
+        print_report(iface, args.timeout, offers, dora)
 
-    if args.dump:
-        payload = {
-            "tool": "dhcpprobe",
-            "iface": iface,
-            "timeout_s": args.timeout,
-            "offer_count": len(offers),
-            "offers": offers,
-            "verdict_code": (
-                EXIT_NONE if not offers else EXIT_OK if len(offers) == 1 else EXIT_MULTI
-            ),
-            "verdict": (
-                "none"
-                if not offers
-                else "single"
-                if len(offers) == 1
-                else "multiple"
-            ),
-        }
-        path = report.write_dump(args.dump, payload)
-        print(f"dump: {path}")
+        code = EXIT_NONE if not offers else EXIT_MULTI if len(offers) > 1 else EXIT_OK
+        if code == EXIT_OK and dora is not None and dora.get("state") != "ack":
+            code = EXIT_NOACK
 
-    report.finished()
-    if not offers:
-        return EXIT_NONE
-    if len(offers) > 1:
-        return EXIT_MULTI
-    return EXIT_OK
+        if args.dump:
+            payload = {
+                "tool": "dhcpprobe",
+                "iface": iface,
+                "timeout_s": args.timeout,
+                "offer_count": len(offers),
+                "offers": offers,
+                "verdict_code": code,
+                "verdict": (
+                    "none"
+                    if not offers
+                    else "single"
+                    if len(offers) == 1
+                    else "multiple"
+                ),
+            }
+            if dora is not None:
+                payload["dora"] = dora
+            path = report.write_dump(args.dump, payload)
+            print(f"dump: {path}")
+
+        report.finished()
+        return code
+    finally:
+        if vlan_created:
+            vlan_teardown(iface)
 
 
 if __name__ == "__main__":

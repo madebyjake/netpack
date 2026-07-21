@@ -36,11 +36,11 @@ jobs:
 
       - name: ruff
         run: |
-          ruff check lib/netpack tests bin/dhcpprobe bin/linkstat
+          ruff check lib/netpack tests bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck
 
       - name: py_compile
         run: |
-          python -m py_compile lib/netpack/*.py bin/dhcpprobe bin/linkstat
+          python -m py_compile lib/netpack/*.py bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck
 
       - name: pytest
         run: |
@@ -54,7 +54,8 @@ jobs:
           bin/netpack --version
           bin/netpack help >/dev/null
           bin/npk list
-          mapfile -t tools < <(bin/netpack list | awk 'NR > 2 && NF { print $1 }')
+          # First column of tool rows only; skips the header and the [sudo]/[note]/[warn] legend.
+          mapfile -t tools < <(bin/netpack list | awk 'NR > 2 && $1 ~ /^[a-z0-9-]+$/ { print $1 }')
           (( ${#tools[@]} >= 12 )) || { echo "expected >= 12 tools, got ${#tools[@]}"; exit 1; }
           for t in "${tools[@]}"; do
             echo "--help: $t"

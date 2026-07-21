@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# wifiscan — survey nearby Wi-Fi access points and channel usage
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/netpack.sh
+source "${ROOT}/lib/netpack.sh"
+
+IFACE=""
+
+usage() {
+  cat <<'EOF'
+wifiscan — list nearby Wi-Fi access points, signal, and channel usage.
+
+Triggers an active scan (iw dev IFACE scan): the radio sweeps every channel and
+sends probe requests, which briefly interrupts the current association. Requires
+root. Use to spot channel congestion, overlapping APs, and unexpected open SSIDs
+in a crowded venue.
+
+Usage:
+  wifiscan [-i IFACE]
+
+Options:
+  -i IFACE      Wireless interface (default: first wireless interface)
+  -h, --help    Show this help
+
+Exit codes:
+  0  scan completed
+  1  usage, dependency, permission, or no wireless interface
+EOF
+}
+
+if [[ "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+while getopts ":i:h" opt; do
+  case "$opt" in
+    i) IFACE=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 1 ;;
+  esac
+done
+
+is_wireless_iface() {
+  [[ -d "/sys/class/net/$1/wireless" || -e "/sys/class/net/$1/phy80211" ]]
+}
+
+first_wireless() {
+  local d name
+  for d in /sys/class/net/*; do
+    [[ -d "$d" ]] || continue
+    name="$(basename "$d")"
+    if is_wireless_iface "$name"; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_cmd iw
+
+if [[ -n "$IFACE" ]]; then
+  validate_iface "$IFACE"
+  is_wireless_iface "$IFACE" || die "not a wireless interface: ${IFACE}"
+else
+  IFACE="$(first_wireless)" || die "no wireless interface found"
+fi
+
+require_root
+
+DIR="$(private_tmpdir wifiscan)"
+cleanup() { rm -rf "$DIR"; }
+trap cleanup EXIT
+SCAN="${DIR}/scan.txt"
+APS="${DIR}/aps.tsv"
+
+header wifiscan
+echo "iface: ${IFACE}"
+
+# Current association gives context for the congestion read.
+if assoc="$(iw dev "$IFACE" link 2>/dev/null)" && [[ "$assoc" == *"Connected to"* ]]; then
+  cur_ssid="$(printf '%s\n' "$assoc" | awk -F': ' '/^[[:space:]]*SSID:/ {print $2; exit}')"
+  cur_freq="$(printf '%s\n' "$assoc" | awk '/freq:/ {print $2; exit}')"
+  echo "assoc: ${cur_ssid:-?} (freq ${cur_freq:-?} MHz)"
+else
+  echo "assoc: (not associated)"
+fi
+echo
+
+if ! iw dev "$IFACE" scan >"$SCAN" 2>"${DIR}/err"; then
+  cat "${DIR}/err" >&2 || true
+  die "scan failed on ${IFACE} (radio busy, rfkill, or unsupported)"
+fi
+
+# One record per BSS: bssid, channel (from freq), signal dBm, encryption, SSID.
+awk '
+  function chan(f) {
+    if (f == 2484) return 14
+    if (f >= 2412 && f <= 2472) return (f - 2407) / 5
+    if (f >= 5000) return (f - 5000) / 5
+    return "?"
+  }
+  function flush() {
+    if (bss != "") {
+      enc = rsn ? "wpa2/3" : (wpa ? "wpa" : (priv ? "wep" : "open"))
+      printf "%s\t%s\t%s\t%s\t%s\n", bss, chan(freq), sig, enc, ssid
+    }
+  }
+  /^BSS / { flush(); bss = $2; sub(/\(on.*/, "", bss); ssid = "<hidden>"; sig = "?"; freq = "?"; rsn = 0; wpa = 0; priv = 0 }
+  /^[[:space:]]*signal:/ { sig = $2 }
+  /^[[:space:]]*freq:/ { freq = $2 }
+  /^[[:space:]]*capability:.*Privacy/ { priv = 1 }
+  /^[[:space:]]*RSN:/ { rsn = 1 }
+  /^[[:space:]]*WPA:/ { wpa = 1 }
+  /^[[:space:]]*SSID:/ { s = $0; sub(/^[[:space:]]*SSID:[[:space:]]*/, "", s); if (s != "") ssid = s }
+  END { flush() }
+' "$SCAN" | sort -t "$(printf '\t')" -k3,3 -nr >"$APS" || true
+
+section "access points"
+printf '  %-17s %-4s %-7s %-8s %s\n' "BSSID" "CH" "SIGNAL" "ENC" "SSID"
+COUNT=0
+while IFS=$'\t' read -r bss ch sig enc ssid; do
+  [[ -n "$bss" ]] || continue
+  COUNT=$((COUNT + 1))
+  printf '  %-17s %-4s %-7s %-8s %s\n' "$bss" "$ch" "$sig" "$enc" "$ssid"
+done <"$APS"
+[[ "$COUNT" -eq 0 ]] && echo "  (none)"
+
+channel_hist() {
+  local band=$1 lo=$2 hi=$3
+  local out
+  out="$(awk -F'\t' -v lo="$lo" -v hi="$hi" '
+    $2 ~ /^[0-9]+$/ && $2 >= lo && $2 <= hi { c[$2]++ }
+    END { for (ch = lo; ch <= hi; ch++) if (c[ch]) printf "  ch %-3s %d\n", ch, c[ch] }
+  ' "$APS")"
+  if [[ -n "$out" ]]; then
+    section "channel usage (${band})"
+    printf '%s\n' "$out"
+  fi
+}
+channel_hist "2.4 GHz" 1 14
+channel_hist "5 GHz" 32 177
+
+# Open SSIDs at an event are worth a second look (rogue AP / evil twin).
+opens="$(awk -F'\t' '$4 == "open" { print $5 }' "$APS" | sort -u)"
+if [[ -n "$opens" ]]; then
+  echo
+  warning "open (unencrypted) SSIDs present — verify none are rogue:"
+  while IFS= read -r s; do
+    [[ -n "$s" ]] && echo "  ${s}"
+  done <<<"$opens"
+fi
+
+# Busiest 2.4 GHz channel for the verdict. awk prints nothing when no 2.4 GHz
+# APs are present, so busy_ch stays empty and the "none on 2.4 GHz" branch fires.
+busy_ch=""
+busy_n=""
+read -r busy_ch busy_n < <(awk -F'\t' '
+  $2 ~ /^[0-9]+$/ && $2 <= 14 { c[$2]++ }
+  END { bc = ""; bn = 0; for (ch in c) if (c[ch] > bn) { bn = c[ch]; bc = ch } if (bn > 0) print bc, bn }
+' "$APS") || true
+
+NEXT="On 2.4 GHz prefer non-overlapping channels 1, 6, or 11."
+if (( COUNT == 0 )); then
+  verdict "no access points seen (radio issue, shielded location, or all hidden)." \
+    "Confirm the interface is up and not rfkill-blocked."
+elif [[ -n "${busy_ch:-}" ]]; then
+  verdict "${COUNT} access point(s) visible; busiest 2.4 GHz channel is ${busy_ch} (${busy_n} APs)." \
+    "$NEXT"
+else
+  verdict "${COUNT} access point(s) visible (none on 2.4 GHz)." \
+    "$NEXT"
+fi
+echo "finished: $(timestamp_local)"
+exit 0

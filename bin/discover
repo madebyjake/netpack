@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""discover — enumerate devices advertising services via SSDP and mDNS."""
+
+from __future__ import annotations
+
+import argparse
+import socket
+import struct
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+
+from netpack import report  # noqa: E402
+from netpack.discovery import encode_name, parse_mdns, parse_ssdp  # noqa: E402
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+
+SSDP_ADDR = ("239.255.255.250", 1900)
+MDNS_ADDR = ("224.0.0.251", 5353)
+MDNS_META = "_services._dns-sd._udp.local"
+
+
+def _usage() -> str:
+    return """\
+discover — list devices that announce services on the local segment.
+
+Sends an SSDP M-SEARCH and an mDNS service-enumeration query, then groups the
+replies by host. Complements segscan: ARP tells you which addresses are live;
+discover tells you what they claim to be (media servers, TVs, printers,
+cameras, AV gear). IPv4 link-local multicast only; no root required.
+
+mDNS replies are requested as unicast (QU); responders that only multicast are
+not captured. Best-effort, not exhaustive.
+
+Usage:
+  discover [-t SECONDS] [--dump FILE]
+
+Options:
+  -t, --timeout SEC   Listen window per protocol (default: 3)
+  --dump FILE         Write JSON evidence to FILE
+  -h, --help          Show this help
+
+Exit codes:
+  0  discovery completed (zero devices is a valid result)
+  1  usage, dependency, or socket error
+"""
+
+
+def _outbound_ip() -> str | None:
+    """Source IP of the default route, for pinning multicast to that interface."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("1.1.1.1", 53))
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return None
+
+
+def _mcast_socket(ttl: int, src_ip: str | None) -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+    if src_ip:
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(src_ip))
+        except OSError:
+            pass
+    sock.settimeout(0.5)
+    return sock
+
+
+def ssdp_search(timeout: float, src_ip: str | None) -> tuple[dict[str, dict[str, Any]], str]:
+    msg = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        "HOST: 239.255.255.250:1900\r\n"
+        'MAN: "ssdp:discover"\r\n'
+        "MX: 2\r\n"
+        "ST: ssdp:all\r\n\r\n"
+    ).encode()
+    sock = _mcast_socket(2, src_ip)
+    devices: dict[str, dict[str, Any]] = {}
+    try:
+        try:
+            sock.sendto(msg, SSDP_ADDR)
+        except OSError as exc:
+            return devices, str(exc)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            ip = addr[0]
+            headers = parse_ssdp(data)
+            dev = devices.setdefault(ip, {"ip": ip, "server": "", "services": set()})
+            if headers.get("server"):
+                dev["server"] = headers["server"]
+            st = headers.get("st") or headers.get("nt")
+            if st and st != "ssdp:all":
+                dev["services"].add(st)
+    finally:
+        sock.close()
+    return devices, ""
+
+
+def mdns_search(timeout: float, src_ip: str | None) -> tuple[dict[str, set[str]], str]:
+    header = struct.pack(">HHHHHH", 0, 0, 1, 0, 0, 0)
+    # qclass 0x8001 = IN with the unicast-response (QU) bit set.
+    query = header + encode_name(MDNS_META) + struct.pack(">HH", 12, 0x8001)
+    sock = _mcast_socket(1, src_ip)
+    hosts: dict[str, set[str]] = {}
+    try:
+        try:
+            sock.sendto(query, MDNS_ADDR)
+        except OSError as exc:
+            return hosts, str(exc)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            ip = addr[0]
+            for rtype, _name, target in parse_mdns(data):
+                if rtype == 12 and target:  # PTR → advertised service type
+                    hosts.setdefault(ip, set()).add(target.replace(".local", ""))
+    finally:
+        sock.close()
+    return hosts, ""
+
+
+def print_report(
+    ssdp: dict[str, dict[str, Any]],
+    mdns: dict[str, set[str]],
+    timeout: float,
+    ssdp_err: str = "",
+    mdns_err: str = "",
+) -> None:
+    print(f"discover — {report.timestamp_local()}")
+    print(f"window: {timeout:g}s per protocol")
+
+    report.section(f"SSDP ({len(ssdp)})")
+    if ssdp_err:
+        report.warning(f"SSDP query failed: {ssdp_err}")
+    if not ssdp:
+        print("  (none)")
+    for ip in sorted(ssdp, key=_ip_key):
+        dev = ssdp[ip]
+        server = dev["server"][:60] or "-"
+        print(f"  {ip}  {server}")
+        svcs = sorted(dev["services"])
+        if svcs:
+            print(f"      services: {len(svcs)} ({', '.join(svcs[:4])}"
+                  f"{', …' if len(svcs) > 4 else ''})")
+
+    report.section(f"mDNS ({len(mdns)})")
+    if mdns_err:
+        report.warning(f"mDNS query failed: {mdns_err}")
+    if not mdns:
+        print("  (none)")
+    for ip in sorted(mdns, key=_ip_key):
+        svcs = sorted(mdns[ip])
+        print(f"  {ip}  {', '.join(svcs) if svcs else '-'}")
+
+    total = len(set(ssdp) | set(mdns))
+    if total == 0:
+        report.verdict(
+            "no SSDP or mDNS responders seen.",
+            "Quiet segment, discovery filtered by client isolation, or nothing advertising.",
+        )
+    else:
+        report.verdict(
+            f"{total} host(s) announced services (SSDP {len(ssdp)}, mDNS {len(mdns)}).",
+            "Cross-reference with segscan; unexpected advertisers may be rogue devices.",
+        )
+
+
+def _ip_key(ip: str) -> tuple:
+    try:
+        return tuple(int(p) for p in ip.split("."))
+    except ValueError:
+        return (0,)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-t", "--timeout", type=float, default=3.0)
+    parser.add_argument("--dump")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.help:
+        print(_usage(), end="")
+        return EXIT_OK
+
+    if args.timeout <= 0:
+        print("error: timeout must be positive", file=sys.stderr)
+        return EXIT_ERROR
+
+    src_ip = _outbound_ip()
+    try:
+        ssdp, ssdp_err = ssdp_search(args.timeout, src_ip)
+        mdns, mdns_err = mdns_search(args.timeout, src_ip)
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return EXIT_ERROR
+
+    if ssdp_err and mdns_err:
+        print(
+            f"error: could not send discovery queries ({ssdp_err}); "
+            "no multicast route, or interface down",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    print_report(ssdp, mdns, args.timeout, ssdp_err, mdns_err)
+
+    if args.dump:
+        payload = {
+            "tool": "discover",
+            "timeout_s": args.timeout,
+            "ssdp": [
+                {"ip": d["ip"], "server": d["server"], "services": sorted(d["services"])}
+                for d in ssdp.values()
+            ],
+            "mdns": [{"ip": ip, "services": sorted(s)} for ip, s in mdns.items()],
+            "host_count": len(set(ssdp) | set(mdns)),
+        }
+        path = report.write_dump(args.dump, payload)
+        print(f"dump: {path}")
+
+    report.finished()
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

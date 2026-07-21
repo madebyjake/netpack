@@ -10,7 +10,7 @@ TIMEOUT=5
 
 usage() {
   cat <<'EOF'
-webcheck — detect captive portals and HTTP interception.
+webcheck — detect captive portals and HTTP/TLS interception.
 
 Fetches well-known connectivity-check endpoints over plain HTTP (deliberate:
 portals intercept HTTP) and compares each response against its published
@@ -18,11 +18,18 @@ expected answer. DNS and ICMP often look clean while a portal intercepts HTTP;
 run this when splitloss and dnscheck pass but "nothing works".
 
 Redirects are not followed — an unexpected redirect is the portal evidence.
-Generates a few small HTTP GET requests.
+
+A final HTTPS probe validates the certificate chain against the system trust
+store: an untrusted chain while plain HTTP works indicates TLS interception
+(security appliance or MITM). The reported issuer is evidence.
+
+Also compares the local clock against the HTTP Date header (informational):
+large skew breaks TLS, TOTP/auth, and evidence timestamps.
 
 Endpoints:
   http://connectivitycheck.gstatic.com/generate_204  expect 204, empty body
   http://detectportal.firefox.com/success.txt        expect 200, body "success"
+  https://detectportal.firefox.com/success.txt       expect 200, trusted chain
 
 Usage:
   webcheck [-t SECONDS]
@@ -35,7 +42,7 @@ Exit codes:
   0  all endpoints returned their expected responses
   1  usage or dependency error
   2  no HTTP response from one or more endpoints
-  3  unexpected response; captive portal or interception suspected
+  3  unexpected response; portal or HTTP/TLS interception suspected
 EOF
 }
 
@@ -61,32 +68,77 @@ trap cleanup EXIT
 
 UNEXPECTED=0
 FAILED=0
+SKEW_S=""
+
+# Record local-vs-server clock skew from the first HTTP Date header seen.
+# GNU date required for parsing; silently skipped elsewhere.
+capture_skew() {
+  local hdrs="${DIR}/headers" date_hdr remote now
+  [[ -n "$SKEW_S" ]] && return 0
+  [[ -r "$hdrs" ]] || return 0
+  date_hdr="$(grep -i -m1 '^date:' "$hdrs" | sed -e 's/^[Dd]ate:[[:space:]]*//' -e 's/\r$//' || true)"
+  [[ -n "$date_hdr" ]] || return 0
+  remote="$(date -d "$date_hdr" +%s 2>/dev/null)" || return 0
+  now="$(date +%s)"
+  SKEW_S=$((now - remote))
+}
 
 probe() {
   local url=$1 want_status=$2 want_body=$3
   local body="${DIR}/body" out status redirect got_body
   echo "${url}"
-  if ! out="$(curl -4 -s -m "$TIMEOUT" -o "$body" -w '%{http_code}\t%{redirect_url}' "$url")"; then
-    echo "  no response (connect failure, DNS failure, or timeout)"
+  if ! out="$(curl -4 -s -m "$TIMEOUT" -o "$body" -D "${DIR}/headers" \
+      -w '%{http_code}\t%{redirect_url}' "$url")"; then
+    echo "  $(color_status bad "no response (connect failure, DNS failure, or timeout)")"
     FAILED=$((FAILED + 1))
     return
   fi
+  capture_skew
   IFS=$'\t' read -r status redirect <<<"$out"
   got_body="$(tr -d '[:space:]' < "$body")"
   if [[ "$status" == "$want_status" && "$got_body" == "$want_body" ]]; then
-    echo "  status ${status}  OK"
+    echo "  status ${status}  $(color_status ok)"
     return
   fi
   if [[ "$status" != "$want_status" ]]; then
     if [[ -n "$redirect" ]]; then
-      echo "  status ${status}  REDIRECT -> ${redirect}"
+      echo "  status ${status}  $(color_status warn "REDIRECT -> ${redirect}")"
     else
-      echo "  status ${status}  UNEXPECTED (expected ${want_status})"
+      echo "  status ${status}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
     fi
   else
-    echo "  status ${status}  UNEXPECTED BODY (interception suspected)"
+    echo "  status ${status}  $(color_status warn "UNEXPECTED BODY (interception suspected)")"
   fi
   UNEXPECTED=$((UNEXPECTED + 1))
+}
+
+# HTTPS probe: certificate chain is validated against the system trust store.
+probe_tls() {
+  local url=$1 want_status=$2 want_body=$3
+  local body="${DIR}/body" verr="${DIR}/tlsverbose" out issuer got_body
+  local rc=0
+  echo "${url}"
+  out="$(curl -4 -sv -m "$TIMEOUT" -o "$body" -w '%{http_code}' "$url" 2>"$verr")" || rc=$?
+  issuer="$(grep -m1 -i 'issuer:' "$verr" | sed -e 's/^\*[[:space:]]*//' || true)"
+  if (( rc == 60 )); then
+    echo "  $(color_status bad "certificate not trusted by system store — TLS interception suspected")"
+    [[ -n "$issuer" ]] && echo "  ${issuer}"
+    UNEXPECTED=$((UNEXPECTED + 1))
+    return
+  fi
+  if (( rc != 0 )); then
+    echo "  $(color_status bad "no TLS response (curl exit ${rc}; connect failure, block, or timeout)")"
+    FAILED=$((FAILED + 1))
+    return
+  fi
+  got_body="$(tr -d '[:space:]' < "$body")"
+  if [[ "$out" == "$want_status" && "$got_body" == "$want_body" ]]; then
+    echo "  status ${out}  $(color_status ok)"
+  else
+    echo "  status ${out}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
+    UNEXPECTED=$((UNEXPECTED + 1))
+  fi
+  [[ -n "$issuer" ]] && echo "  ${issuer}"
 }
 
 header webcheck
@@ -96,16 +148,30 @@ echo "=== probes ==="
 probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""
 echo
 probe "http://detectportal.firefox.com/success.txt" 200 "success"
+echo
+probe_tls "https://detectportal.firefox.com/success.txt" 200 "success"
+
+if [[ -n "$SKEW_S" ]]; then
+  echo
+  echo "=== clock ==="
+  ABS_SKEW=${SKEW_S#-}
+  if (( ABS_SKEW > 120 )); then
+    printf '  local clock vs HTTP Date: %s\n' "$(color_status bad "${SKEW_S}s skew")"
+    warning "clock skew exceeds 120s — TLS, auth (TOTP/Kerberos), and evidence timestamps unreliable"
+  else
+    printf '  local clock vs HTTP Date: %s\n' "$(color_status ok "${SKEW_S}s (within tolerance)")"
+  fi
+fi
 
 if (( UNEXPECTED > 0 )); then
-  verdict "unexpected HTTP response(s); captive portal or interception suspected." \
-    "Open the redirect target (or any http:// site) in a browser to reach the portal login."
+  verdict "unexpected HTTP/TLS response(s); captive portal or interception suspected." \
+    "Open the redirect target (or any http:// site) in a browser; an untrusted TLS chain means a security appliance is rewriting HTTPS."
   echo "finished: $(timestamp_local)"
   exit 3
 fi
 if (( FAILED > 0 )); then
-  verdict "no HTTP response from ${FAILED} endpoint(s)." \
-    "If splitloss and dnscheck are clean, suspect HTTP-specific filtering or a proxy requirement."
+  verdict "no response from ${FAILED} endpoint(s) (HTTP or HTTPS)." \
+    "If splitloss and dnscheck are clean, suspect HTTP/S-specific filtering or a proxy requirement."
   echo "finished: $(timestamp_local)"
   exit 2
 fi

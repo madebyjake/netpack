@@ -22,6 +22,11 @@ Localizes fault domain:
   gateway clean, WAN lossy      -> uplink / path beyond the gateway
   both clean                    -> not indicated in this window
 
+Also reports rtt min/avg/max/mdev per target (latency and jitter evidence;
+compare an idle run against a run under planned load to show bufferbloat).
+Runs of 120s or longer include a loss timeline: any 60s interval with loss is
+listed with its wall-clock start, for correlating with incident reports.
+
 Usage:
   splitloss [-t SECONDS] [-w WAN_TARGET] [-d DIR]
 
@@ -84,6 +89,8 @@ trap cleanup EXIT
 
 header splitloss
 echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s"
+# Wall-clock base for the loss timeline: seq N was sent ~N-1 seconds after this.
+START_EPOCH="$(date +%s)"
 set +e
 ping -D -i 1 -w "$T" "$GW"  >"$LOG_GW"  2>&1 &
 P1=$!
@@ -114,8 +121,57 @@ wl="$(loss_pct "$LOG_WAN")" || {
   die "could not parse WAN ping summary in ${LOG_WAN}"
 }
 
-printf 'gateway (%s): %s%% packet loss\n' "$GW" "$gl"
-printf 'wan     (%s): %s%% packet loss\n' "$WAN" "$wl"
+# "label (host): X% packet loss  rtt min/avg/max/mdev a/b/c/d ms" — rtt is
+# omitted when the log has no summary (100% loss).
+print_target() {
+  local label=$1 host=$2 loss=$3 log=$4
+  local stats rmin ravg rmax rmdev extra=""
+  if stats="$(rtt_stats "$log")"; then
+    IFS=$'\t' read -r rmin ravg rmax rmdev <<<"$stats"
+    extra="  rtt min/avg/max/mdev ${rmin}/${ravg}/${rmax}/${rmdev} ms"
+  fi
+  printf '%-7s (%s): %s packet loss%s\n' "$label" "$host" "$(color_loss_pct "$loss")" "$extra"
+}
+
+bucket_clock() {
+  local epoch=$((START_EPOCH + $1))
+  # GNU date on the Debian target; -r fallback keeps dev boxes working.
+  date -d "@${epoch}" +%H:%M:%S 2>/dev/null || date -r "$epoch" +%H:%M:%S
+}
+
+print_timeline() {
+  local label=$1 log=$2
+  local rows rc=0 off lost expect pct
+  # bucket_loss exits non-zero on an unusable log; do not report that as clean.
+  rows="$(bucket_loss "$log" 60)" || rc=$?
+  if (( rc != 0 )); then
+    echo "  ${label}: $(color_status warn "timeline unavailable (log not parseable)")"
+    return 0
+  fi
+  if [[ -z "$rows" ]]; then
+    echo "  ${label}: $(color_status ok "no lossy intervals")"
+    return 0
+  fi
+  echo "  ${label}:"
+  while IFS=$'\t' read -r off lost expect; do
+    [[ -n "$off" ]] || continue
+    pct="$(awk -v l="$lost" -v e="$expect" 'BEGIN { printf "%.1f", e ? l * 100 / e : 0 }')"
+    printf '    %s  %s\n' "$(bucket_clock "$off")" \
+      "$(color_status bad "${lost}/${expect} lost (${pct}%)")"
+  done <<<"$rows"
+}
+
+print_target gateway "$GW" "$gl" "$LOG_GW"
+print_target wan "$WAN" "$wl" "$LOG_WAN"
+
+# For long runs, show when the loss happened, not just how much.
+if (( T >= 120 )); then
+  section "loss timeline (60s intervals, lossy only)"
+  print_timeline gateway "$LOG_GW"
+  print_timeline wan "$LOG_WAN"
+  echo
+fi
+
 if [[ "$KEEP_LOGS" -eq 1 ]]; then
   echo "logs: ${LOG_GW} ${LOG_WAN}"
 else

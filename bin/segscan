@@ -13,8 +13,10 @@ segscan — inventory the local segment (interface, LLDP, gateway, ARP).
 Performs an active ARP sweep of the local subnet (arp-scan --localnet).
 Requires root for arp-scan and typically for LLDP neighbor queries.
 
-Large prefixes generate substantial broadcast traffic. Sweeps larger than /22
-(1024 addresses) require -y to confirm.
+The sweep probes every address on the subnet and can read as recon to NAC or
+switch port-security; run it only where you are authorized. Large prefixes also
+generate substantial broadcast traffic — sweeps larger than /22 (1024
+addresses) require -y to confirm.
 
 Usage:
   segscan [IFACE]
@@ -124,19 +126,23 @@ if [[ -n "$PREFIX" ]] && is_uint "$PREFIX"; then
 fi
 
 if ! command -v arp-scan >/dev/null 2>&1; then
-  echo "  arp-scan not installed"
+  echo "  $(color_status warn "arp-scan not installed")"
   echo
   echo "=== duplicate IPs ==="
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
+  verdict "ARP sweep skipped (arp-scan not installed)." \
+    "Install arp-scan and re-run for duplicate-IP detection."
   echo "finished: $(timestamp_local)"
   exit 0
 fi
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "  arp-scan requires root; re-run with sudo for the sweep"
+  echo "  $(color_status warn "arp-scan requires root; re-run with sudo for the sweep")"
   echo
   echo "=== duplicate IPs ==="
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
+  verdict "ARP sweep skipped (root required)." \
+    "Re-run with sudo for the sweep and duplicate-IP check."
   echo "finished: $(timestamp_local)"
   exit 0
 fi
@@ -164,18 +170,27 @@ if [[ -s "$SWEEP" ]]; then
     }
   ' "$SWEEP" | sort || true)"
   if [[ -z "$dups" ]]; then
-    echo "  none"
+    echo "  $(color_status ok none)"
   else
     while IFS= read -r ip; do
       [[ -n "$ip" ]] || continue
-      echo "  DUPLICATE: ${ip}"
+      echo "  $(color_status bad "DUPLICATE: ${ip}")"
       grep -E "^${ip}[[:space:]]" "$SWEEP" | sed 's/^/    /' || true
       DUP_EXIT=2
     done <<<"$dups"
   fi
 else
-  echo "  skipped (no sweep data)"
+  echo "  $(color_status warn "skipped (no sweep data)")"
 fi
 
+if (( DUP_EXIT == 2 )); then
+  verdict "duplicate IP addresses detected on the segment." \
+    "Inspect conflicting MACs above and isolate the unexpected host."
+elif [[ -s "$SWEEP" ]]; then
+  verdict "segment inventory complete; no duplicate IPs in the sweep."
+else
+  verdict "segment inventory complete; ARP sweep produced no data." \
+    "Check interface state and that arp-scan can reach the segment."
+fi
 echo "finished: $(timestamp_local)"
 exit "$DUP_EXIT"
