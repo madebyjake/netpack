@@ -40,6 +40,8 @@ while getopts ":h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 have() {
   command -v "$1" >/dev/null 2>&1
@@ -72,7 +74,7 @@ echo "root: $(netpack_root)"
 echo "bin:  $(netpack_bin)"
 echo "user: $(id -un) (uid $(id -u))"
 if [[ "$(id -u)" -eq 0 ]]; then
-  printf '%snote: running as root (not required for doctor)%s\n' "$NP_C_BAD" "$NP_C_OFF"
+  note "running as root (not required for doctor)"
 fi
 echo
 
@@ -210,10 +212,10 @@ echo
 if (( MISSING > 0 )); then
   verdict "${MISSING} required dependency check(s) failed." \
     "Install missing packages (see README) and re-run doctor."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 verdict "required dependencies look present." \
   "Tools that need root still require sudo at run time."
-echo "finished: $(timestamp_local)"
+finished
 exit 0

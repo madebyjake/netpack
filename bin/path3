@@ -58,6 +58,8 @@ shift $((OPTIND - 1))
 
 TARGET=${1:-}
 [[ -n "$TARGET" ]] || { usage >&2; exit 1; }
+shift
+no_extra_args "$@"
 require_uint count "$COUNT" 1
 require_uint port "$PORT" 1 65535
 require_cmd mtr awk
@@ -119,9 +121,9 @@ if (( FAILED_MODES > 0 )); then
   else
     verdict "${FAILED_MODES} mtr mode(s) failed or produced unusable output."
   fi
-  echo "finished: $(timestamp_local)"
+  finished
   exit 1
 fi
 verdict "all three modes produced usable reports." \
   "Prefer final-hop loss corroborated across protocols; intermediate-only loss is often control-plane deprioritization."
-echo "finished: $(timestamp_local)"
+finished

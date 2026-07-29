@@ -54,6 +54,8 @@ while getopts ":n:p:t:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 TYPE="${TYPE^^}"  # dig prints record types uppercase
 
@@ -188,21 +190,21 @@ fi
 if (( failed )); then
   verdict "one or more resolvers failed or returned a non-NOERROR status." \
     "Check resolver reachability, captive portals, and local DNS configuration."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 if (( conflict )); then
   verdict "resolvers returned conflicting answers for the same name." \
     "Compare configured resolvers against the public baseline; suspect hijack, split DNS, or stale cache."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 3
 fi
 if [[ ${#CONF[@]} -eq 0 ]]; then
   verdict "public resolver succeeded; no configured resolvers were found." \
     "Inspect /etc/resolv.conf or systemd-resolved configuration."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 verdict "configured and public resolvers returned consistent NOERROR answers."
-echo "finished: $(timestamp_local)"
+finished
 exit 0

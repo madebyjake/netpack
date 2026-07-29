@@ -58,6 +58,8 @@ while getopts ":c:n:s:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 require_uint count "$COUNT" 1
 require_cmd dig awk sort
@@ -123,16 +125,16 @@ done
 if (( lossy == 0 )); then
   verdict "UDP replies received from all tested resolvers." \
     "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 0
 elif (( clean == 0 )); then
   verdict "UDP loss observed to all tested resolvers." \
     "Investigate path policing, NAT state, or venue/ISP UDP handling."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 else
   verdict "results diverge across resolvers." \
     "Likely destination-specific handling rather than a shared path fault."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 3
 fi

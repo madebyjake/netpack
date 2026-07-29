@@ -53,6 +53,8 @@ while getopts ":p:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 require_uint port "$PORT" 1 65535
 require_cmd iperf3

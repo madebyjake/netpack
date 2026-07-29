@@ -45,6 +45,8 @@ while getopts ":w:m:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 require_uint "max size" "$MAX" 100
 require_cmd ping ip awk
@@ -142,9 +144,9 @@ fi
 if (( reduced )); then
   verdict "reduced path MTU detected (or ICMP DF probes blocked beyond a size)." \
     "Check tunnels, PPPoE, and firewall DF handling; compare gateway vs WAN sizes."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 verdict "gateway and WAN accepted near-full-size DF probes."
-echo "finished: $(timestamp_local)"
+finished
 exit 0

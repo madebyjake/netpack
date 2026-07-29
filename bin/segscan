@@ -19,7 +19,6 @@ generate substantial broadcast traffic — sweeps larger than /22 (1024
 addresses) require -y to confirm.
 
 Usage:
-  segscan [IFACE]
   segscan [-i IFACE] [-y]
 
 Options:
@@ -51,9 +50,7 @@ while getopts ":i:yh" opt; do
   esac
 done
 shift $((OPTIND - 1))
-if [[ -n "${1:-}" ]]; then
-  IFACE=$1
-fi
+no_extra_args "$@"
 
 IFACE="$(resolve_iface "${IFACE}")"
 require_cmd ip
@@ -132,7 +129,7 @@ if ! command -v arp-scan >/dev/null 2>&1; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (arp-scan not installed)." \
     "Install arp-scan and re-run for duplicate-IP detection."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 0
 fi
 
@@ -143,7 +140,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (root required)." \
     "Re-run with sudo for the sweep and duplicate-IP check."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 0
 fi
 
@@ -192,5 +189,5 @@ else
   verdict "segment inventory complete; ARP sweep produced no data." \
     "Check interface state and that arp-scan can reach the segment."
 fi
-echo "finished: $(timestamp_local)"
+finished
 exit "$DUP_EXIT"

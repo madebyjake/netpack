@@ -125,10 +125,10 @@ done
 
 if (( FAILED == 0 )); then
   verdict "all ${#PORTS[@]} port(s) connected."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 0
 fi
 verdict "${FAILED} of ${#PORTS[@]} port(s) did not connect." \
   "REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host."
-echo "finished: $(timestamp_local)"
+finished
 exit 2
