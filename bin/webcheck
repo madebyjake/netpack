@@ -58,6 +58,8 @@ while getopts ":t:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 require_uint timeout "$TIMEOUT" 1
 require_cmd curl
@@ -118,8 +120,12 @@ probe_tls() {
   local body="${DIR}/body" verr="${DIR}/tlsverbose" out issuer got_body
   local rc=0
   echo "${url}"
-  out="$(curl -4 -sv -m "$TIMEOUT" -o "$body" -w '%{http_code}' "$url" 2>"$verr")" || rc=$?
+  out="$(curl -4 -sv -m "$TIMEOUT" -o "$body" -D "${DIR}/headers" \
+      -w '%{http_code}' "$url" 2>"$verr")" || rc=$?
   issuer="$(grep -m1 -i 'issuer:' "$verr" | sed -e 's/^\*[[:space:]]*//' || true)"
+  if (( rc == 0 )); then
+    capture_skew
+  fi
   if (( rc == 60 )); then
     echo "  $(color_status bad "certificate not trusted by system store — TLS interception suspected")"
     [[ -n "$issuer" ]] && echo "  ${issuer}"
@@ -138,7 +144,11 @@ probe_tls() {
     echo "  status ${out}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
     UNEXPECTED=$((UNEXPECTED + 1))
   fi
-  [[ -n "$issuer" ]] && echo "  ${issuer}"
+  # Not `[[ ]] &&` — as the last command it would set the function's return
+  # status to 1 when no issuer was captured, and set -e would abort the report.
+  if [[ -n "$issuer" ]]; then
+    echo "  ${issuer}"
+  fi
 }
 
 header webcheck
@@ -166,15 +176,15 @@ fi
 if (( UNEXPECTED > 0 )); then
   verdict "unexpected HTTP/TLS response(s); captive portal or interception suspected." \
     "Open the redirect target (or any http:// site) in a browser; an untrusted TLS chain means a security appliance is rewriting HTTPS."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 3
 fi
 if (( FAILED > 0 )); then
   verdict "no response from ${FAILED} endpoint(s) (HTTP or HTTPS)." \
     "If splitloss and dnscheck are clean, suspect HTTP/S-specific filtering or a proxy requirement."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 verdict "connectivity endpoints returned expected responses; no portal indicated."
-echo "finished: $(timestamp_local)"
+finished
 exit 0
