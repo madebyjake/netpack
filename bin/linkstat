@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 import time
@@ -13,14 +12,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import report  # noqa: E402
-from netpack.net import NetError, resolve_iface  # noqa: E402
+from netpack import cli, link, report
+from netpack.net import NetError, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_PHYSICAL = 2
 EXIT_CONGESTION = 3
 EXIT_FLAP = 4
+EXIT_INTERRUPT = 130
 
 COUNTERS = [
     "rx_packets",
@@ -63,6 +63,11 @@ congestion; drops while idle suggest policy or misconfiguration).
   dropped / fifo growing             -> congestion, buffering, or policy
   carrier_changes growing            -> link flaps (ethernet); informational on Wi-Fi
 
+On wired links the report also states speed/duplex, Energy Efficient Ethernet
+and flow control. EEE is called out because low-power idle adds wake latency
+and jitter, which destabilizes real-time media clocking (Dante/AES67, PTP) and
+VoIP. These are settings, not counters, so they never change the exit code.
+
 Usage:
   linkstat [-i IFACE] [-t SECONDS] [--dump FILE]
 
@@ -78,6 +83,7 @@ Exit codes:
   2  physical-layer counter growth
   3  congestion/drop counter growth
   4  ethernet carrier flaps (without error growth)
+  130  interrupted before the sample completed
 """
 
 
@@ -115,54 +121,48 @@ def is_wireless(iface: str) -> bool:
     )
 
 
+def _run(cmd: list[str]) -> str | None:
+    """Command stdout, or None when it is missing or exits non-zero."""
+    try:
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+
+
 def link_info(iface: str) -> dict[str, str]:
     info: dict[str, str] = {}
     if is_wireless(iface):
         if not _have("iw"):
             info["note"] = "iw not installed"
             return info
-        try:
-            out = subprocess.check_output(
-                ["iw", "dev", iface, "link"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except subprocess.CalledProcessError:
+        out = _run(["iw", "dev", iface, "link"])
+        if out is None:
             info["note"] = "iw link query failed"
             return info
-        for line in out.splitlines():
-            s = line.strip()
-            low = s.lower()
-            if low.startswith("ssid:"):
-                info["ssid"] = s.split(":", 1)[1].strip()
-            elif "freq:" in low:
-                info["freq"] = s
-            elif "signal:" in low:
-                info["signal"] = s
-            elif "tx bitrate:" in low or "bitrate:" in low:
-                info["bitrate"] = s
-        return info
+        return link.parse_iw_link(out)
 
     if not _have("ethtool"):
         info["note"] = "ethtool not installed"
         return info
-    try:
-        out = subprocess.check_output(
-            ["ethtool", iface],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-    except subprocess.CalledProcessError:
+    out = _run(["ethtool", iface])
+    if out is None:
         info["note"] = "ethtool query failed"
         return info
-    for line in out.splitlines():
-        s = line.strip()
-        if s.startswith("Speed:"):
-            info["speed"] = s.split(":", 1)[1].strip()
-        elif s.startswith("Duplex:"):
-            info["duplex"] = s.split(":", 1)[1].strip()
-        elif s.startswith("Link detected:"):
-            info["link_detected"] = s.split(":", 1)[1].strip()
+    info.update(link.parse_ethtool(out))
+
+    # EEE and flow control are settings rather than counters, but both change
+    # how a link behaves under real-time load, so they belong with the link
+    # facts. Older ethtool lacks these queries; absence is simply not reported.
+    eee_out = _run(["ethtool", "--show-eee", iface])
+    if eee_out is not None:
+        status = link.parse_eee(eee_out)
+        if status:
+            info["eee"] = status
+    pause_out = _run(["ethtool", "-a", iface])
+    if pause_out is not None:
+        pause = link.format_pause(link.parse_pause(pause_out))
+        if pause:
+            info["pause"] = pause
     return info
 
 
@@ -181,15 +181,26 @@ def print_report(
     info: dict[str, str],
     wireless: bool,
 ) -> int:
-    print(f"linkstat — {report.timestamp_local()}")
+    report.header("linkstat")
     print(f"iface: {iface}  sample: {timeout:g}s")
 
     report.section("link")
     if info:
         for key, val in info.items():
-            print(f"  {key}: {val}")
+            if key == "eee" and link.eee_is_enabled(val):
+                print(f"  {key}: {report.color_status('warn', val)}")
+            else:
+                print(f"  {key}: {val}")
     else:
         print("  (no link details available)")
+    if link.eee_is_enabled(info.get("eee")):
+        report.note(
+            "Energy Efficient Ethernet is negotiated on this link. EEE lets the "
+            "PHY enter low-power idle between frames, which adds wake latency and "
+            "jitter — a known cause of clock instability for real-time media "
+            "(Dante/AES67, PTP) and of jitter for VoIP. Disable it on ports "
+            "carrying those streams."
+        )
 
     report.section("utilization")
     for name in BYTE_COUNTERS:
@@ -281,7 +292,7 @@ def print_report(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = cli.ArgumentParser(prog="linkstat", add_help=False)
     parser.add_argument("-i", "--iface")
     parser.add_argument("-t", "--timeout", type=float, default=10.0)
     parser.add_argument("--dump")
@@ -317,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(args.timeout)
     except KeyboardInterrupt:
         print("error: interrupted", file=sys.stderr)
-        return EXIT_ERROR
+        return EXIT_INTERRUPT
     after = snap_counters(iface)
     bytes_after = snap_bytes(iface)
     carrier_after = read_carrier_changes(iface)
@@ -343,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
             "rx_mbit_s": round(mbit_s(byte_deltas["rx_bytes"], args.timeout), 3),
             "tx_mbit_s": round(mbit_s(byte_deltas["tx_bytes"], args.timeout), 3),
             "carrier_changes_delta": flaps,
-            "verdict_code": code,
+            "assessment_code": code,
         }
         path = report.write_dump(args.dump, payload)
         print(f"dump: {path}")
