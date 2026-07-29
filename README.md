@@ -28,6 +28,8 @@ Update later with `git -C ~/netpack pull`.
 
 Alternatively for Scapy only: `pip install -r ~/netpack/requirements.txt`
 
+Developing or running the test suite? See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Launcher
 
 ```text
@@ -108,25 +110,33 @@ Saturating the venue uplink disrupts everything on it — planned tests only.
 
 ## Tools
 
-| Tool | Purpose | Impact |
-|------|---------|--------|
-| `doctor` | Check dependencies and readiness | Read-only |
-| `dhcpprobe` | List DHCP servers on the segment (DISCOVER only) | Broadcast; requires root |
-| `linkstat` | Sample link counters; physical vs congestion | Read-only |
-| `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | Active ARP; root for sweep |
-| `wifiscan` | Nearby Wi-Fi APs, signal, channel congestion | Active scan; requires root |
-| `discover` | SSDP/mDNS service discovery on the segment | Light multicast queries |
-| `splitloss` | Concurrent gateway vs WAN loss, rtt, loss timeline | ICMP load for duration |
-| `dnscheck` | Configured vs public DNS resolver comparison | DNS query load |
-| `webcheck` | Captive portal / HTTP + TLS interception check; clock skew | Few small HTTP(S) GETs |
-| `portcheck` | TCP service reachability by port | A few TCP connects |
-| `mtucheck` | Path MTU probe to gateway and WAN | Low ICMP load |
-| `path3` | mtr over ICMP, UDP, and TCP | Probe load (count × 3); sudo if CAP_NET_RAW needed |
-| `udp-loss` | UDP delivery via DNS queries with replies | DNS query load |
-| `mcastcheck` | Multicast group delivery; Dante/NDI flow check | recv joins group (IGMP); send is light UDP |
-| `ringcap` | Rotating pcap ring (headers by default) | Capture; requires root; `-d DIR` required |
-| `testsrv` | iperf3 server; optional nft set open/close | High traffic when clients connect |
-| `testcli` | iperf3 client companion to `testsrv` | High traffic; planned tests only |
+Root and traffic columns use the same tags as `npk list` and the menu:
+`sudo` needs root (the menu auto-elevates), `sudo?` is better with root (the menu
+asks), `probe` sends light diagnostic traffic, `LOUD` is heavy traffic or active
+probing — authorized, planned use only. A blank cell is passive or read-only.
+
+| Tool | Purpose | Root | Traffic |
+|------|---------|------|---------|
+| `doctor` | Check dependencies and readiness | | |
+| `dhcpprobe` | List DHCP servers on the segment (DISCOVER only) | `sudo` | `probe` |
+| `linkstat` | Sample link counters; physical vs congestion | | |
+| `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | `sudo?` | `LOUD` |
+| `wifiscan` | Nearby Wi-Fi APs, signal, channel congestion | `sudo` | `probe` |
+| `discover` | SSDP/mDNS service discovery on the segment | | `probe` |
+| `splitloss` | Concurrent gateway vs WAN loss, rtt, loss timeline | | `probe` |
+| `dnscheck` | Configured vs public DNS resolver comparison | | `probe` |
+| `webcheck` | Captive portal / HTTP + TLS interception check; clock skew | | `probe` |
+| `portcheck` | TCP service reachability by port | | `probe` |
+| `mtucheck` | Path MTU probe to gateway and WAN | | `probe` |
+| `path3` | mtr over ICMP, UDP, and TCP | `sudo?` | `LOUD` |
+| `udp-loss` | UDP delivery via DNS queries with replies | | `probe` |
+| `mcastcheck` | Multicast group delivery (AV, IPTV, sACN, Dante/NDI) | | `probe` |
+| `ringcap` | Rotating pcap ring (headers by default) | `sudo` | |
+| `testsrv` | iperf3 server; optional nft set open/close | `sudo?` | `LOUD` |
+| `testcli` | iperf3 client companion to `testsrv` | | `LOUD` |
+
+`segscan` and `path3` run without root but lose their main evidence (the ARP
+sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 
 ### Exit codes (common pattern)
 
@@ -135,21 +145,28 @@ Saturating the venue uplink disrupts everything on it — planned tests only.
 | 0 | Clean / expected / single DHCP server |
 | 1 | Usage, dependency, or permission error |
 | 2+ | Condition found (tool-specific; see `--help`) |
+| 130 | Interrupted (except tools where Ctrl-C is the normal stop: `ringcap`, `splitloss`, `mcastcheck recv`) |
 
 ## Production notes
 
 - All tools are IPv4-only (DHCP, ARP, MTU header math, default targets). Dual-stack faults on the v6 side are out of scope.
 - Prefer least privilege: tools that need root say so and exit cleanly.
-- Tool reports include a local ISO-8601 start timestamp in the header (`tool — 2026-07-18T18:30:00-07:00`). Longer runs also print `finished: …` when the summary completes. JSON `--dump` files include a `timestamp` field.
+- Every tool rejects arguments it does not understand (exit 1) rather than
+  falling back to defaults, so a typo like `splitloss -t 60 8.8.8.8` fails
+  loudly instead of quietly testing the default target.
+- Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
+- JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`), and `mcastcheck send` records `interrupted`.
 - JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `discover`, `mcastcheck`). Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.
 - `discover` requests unicast mDNS replies (QU); responders that only multicast are not captured, so it is best-effort, not an exhaustive inventory.
+- `discover` labels known mDNS service types (Dante, NDI, AirPlay, printers, …) and lists real-time AV advertisers separately. Unrecognized types print verbatim. Vendor service names change between product generations, so treat a label as convenience, not authority.
+- `linkstat` reports Energy Efficient Ethernet and flow-control state on wired links. EEE lets the PHY enter low-power idle between frames, adding wake latency and jitter; it is a known cause of clock instability for Dante/AES67 and PTP, and of jitter for VoIP. Disable it on ports carrying those streams. These are settings rather than counters, so they never affect the exit code.
 - `webcheck` fetches public connectivity endpoints over plain HTTP by design (portals intercept HTTP) and never follows redirects; the redirect target is the evidence. Its final HTTPS probe validates the chain against the system trust store (untrusted chain = TLS interception) and its clock line compares the local clock with the HTTP Date header.
 - `dhcpprobe` does not complete DORA by default (no REQUEST/ACK) and does not bind a lease. `--full` completes DORA against the first offer and immediately RELEASEs; it briefly binds an address and appears in server lease logs.
 - For tagged DHCP, pass `dhcpprobe -V <vid>` to create a temporary VLAN sub-interface (removed on exit; an existing sub-interface is reused and left in place), or run on the sub-interface directly (for example `eth0.100`).
 - `udp-loss` sends queries sequentially with a 1s timeout, so a heavily lossy path can take up to COUNT seconds per server (~100s per server at the defaults).
 - `splitloss` reports rtt min/avg/max/mdev per target alongside loss. Runs of 120s+ also print a loss timeline: each 60s interval with loss, stamped with its wall-clock start (derived from the run's start time and the 1s send interval).
-- `mcastcheck recv` is passive apart from the IGMP join — but the join makes snooping switches forward the group to that port, which is the behavior under test. The default group `239.192.77.77:7788` (organization-local scope) avoids Dante's `239.255.0.0/16` media range; never `send` to a group carrying live audio/video. `send` defaults to TTL 1 (local segment only). Probe loss/jitter needs `mcastcheck send` as the source; rate/byte counts work against any flow.
+- `mcastcheck recv` is passive apart from the IGMP join — but the join makes snooping switches forward the group to that port, which is the behavior under test. The default group `239.192.77.77:7788` sits in the RFC 2365 organization-local scope, outside `239.255.0.0/16` (the range Dante allocates media flows from by default). `send` refuses that range without `-y`, since transmitting into a live audio group disrupts it; the guard covers the common default only, so confirm a group is unused before sending. `send` defaults to TTL 1 (local segment only). Probe loss/jitter needs `mcastcheck send` as the source; rate/byte counts work against any flow.
 - `ringcap` requires `-d DIR` and defaults to snaplen 96. Headers may still identify hosts.
 - `segscan` refuses ARP sweeps larger than /22 unless `-y` is passed.
 - `testsrv` only touches nftables sets `inet filter test_tcp` and `test_udp` when those sets exist; they are cleared on EXIT/INT/TERM. `SIGKILL` or power loss skips cleanup — remove the port manually if needed. Non-root runs refuse to guess whether sets exist (nft list needs privileges).
