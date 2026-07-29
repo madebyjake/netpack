@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import ipaddress
 import random
 import subprocess
@@ -14,9 +13,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import report  # noqa: E402
-from netpack.dhcp import diff_offers  # noqa: E402
-from netpack.net import (  # noqa: E402
+from netpack import cli, report
+from netpack.dhcp import diff_offers
+from netpack.net import (
     NetError,
     iface_is_up,
     list_ifaces,
@@ -29,6 +28,7 @@ EXIT_ERROR = 1
 EXIT_NONE = 2
 EXIT_MULTI = 3
 EXIT_NOACK = 4
+EXIT_INTERRUPT = 130
 
 PARAM_REQUEST_LIST = [1, 3, 6, 15, 28, 51, 54, 58, 59, 119, 121]
 
@@ -71,6 +71,7 @@ Exit codes:
   2  no DHCP response
   3  multiple DHCP servers
   4  offer received but REQUEST not ACKed (--full only)
+  130  interrupted before the listen window completed
 """
 
 
@@ -154,7 +155,7 @@ def parse_offer(pkt: Any) -> dict[str, Any]:
     }
 
 
-def build_discover(iface: str, mac: str):
+def build_discover(mac: str):
     from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
     from scapy.layers.inet import IP, UDP  # type: ignore
     from scapy.layers.l2 import Ether  # type: ignore
@@ -342,7 +343,7 @@ def collect_offers(
     from scapy.sendrecv import sendp, sniff  # type: ignore
 
     mac = iface_mac(iface)
-    pkt, xid = build_discover(iface, mac)
+    pkt, xid = build_discover(mac)
     offers: dict[str, dict[str, Any]] = {}
 
     def is_offer(p: Any) -> bool:
@@ -417,7 +418,7 @@ def print_report(
     offers: list[dict[str, Any]],
     dora: dict[str, Any] | None = None,
 ) -> None:
-    print(f"dhcpprobe — {report.timestamp_local()}")
+    report.header("dhcpprobe")
     print(f"iface: {iface}  timeout: {timeout:g}s")
     if not iface_is_up(iface):
         report.note("interface is administratively or operatively down")
@@ -471,7 +472,7 @@ def print_report(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = cli.ArgumentParser(prog="dhcpprobe", add_help=False)
     parser.add_argument("-i", "--iface")
     parser.add_argument("-V", "--vlan", type=int)
     parser.add_argument("-t", "--timeout", type=float, default=5.0)
@@ -536,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
                 dora = complete_dora(iface, mac, xid, offers[0], args.timeout, args.verbose)
         except KeyboardInterrupt:
             print("error: interrupted", file=sys.stderr)
-            return EXIT_ERROR
+            return EXIT_INTERRUPT
         except PermissionError:
             print(
                 "error: permission denied sending/sniffing; re-run with sudo",
@@ -560,8 +561,8 @@ def main(argv: list[str] | None = None) -> int:
                 "timeout_s": args.timeout,
                 "offer_count": len(offers),
                 "offers": offers,
-                "verdict_code": code,
-                "verdict": (
+                "assessment_code": code,
+                "assessment": (
                     "none"
                     if not offers
                     else "single"
