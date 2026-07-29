@@ -106,6 +106,15 @@ require_uint() {
   fi
 }
 
+# Reject leftover positional arguments. Tools that take none, and tools that
+# have already consumed the ones they expect, call this so a typo'd invocation
+# fails loudly instead of silently running against the defaults.
+no_extra_args() {
+  if [[ $# -gt 0 ]]; then
+    die "unexpected argument: $1"
+  fi
+}
+
 private_tmpdir() {
   local prefix=${1:-netpack}
   umask 077
