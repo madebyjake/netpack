@@ -74,8 +74,13 @@ setup() {
 
 @test "list output keeps the tools-end-at-first-blank-line contract" {
   # CI parses `netpack list` this way; changing the format must not break it.
+  # awk sets a flag rather than exiting: exiting early closes its end of the
+  # pipe while netpack is still writing the legend that follows, and under
+  # netpack's `set -o pipefail` that write fails with EPIPE and aborts the
+  # script — nondeterministically, since it depends on whether the kernel
+  # pipe buffer absorbed netpack's full output before awk got scheduled.
   run bash -c "NO_COLOR=1 '${REPO}/bin/netpack' list \
-    | awk 'NR > 2 { if (NF == 0) exit; if (\$1 ~ /^[a-z0-9-]+\$/) print \$1 }' | wc -l"
+    | awk 'NR > 2 { if (NF == 0) stop = 1; if (!stop && \$1 ~ /^[a-z0-9-]+\$/) print \$1 }' | wc -l"
   [ "$status" -eq 0 ]
   [ "$output" -eq "${#TOOLS[@]}" ]
 }
