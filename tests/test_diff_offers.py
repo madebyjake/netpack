@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack.dhcp import diff_offers  # noqa: E402
+from netpack.dhcp import diff_offers
 
 
 def test_diff_offers_empty_or_single() -> None:

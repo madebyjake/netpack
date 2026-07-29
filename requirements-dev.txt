@@ -1,2 +1,4 @@
-ruff>=0.6.0
+# Pinned to a minor series: ruff's default rule set changes between minors,
+# which would flip CI red without any code change.
+ruff>=0.16,<0.17
 pytest>=8.0.0
