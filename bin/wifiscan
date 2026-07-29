@@ -42,6 +42,8 @@ while getopts ":i:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 is_wireless_iface() {
   [[ -d "/sys/class/net/$1/wireless" || -e "/sys/class/net/$1/phy80211" ]]
@@ -100,6 +102,9 @@ awk '
   function chan(f) {
     if (f == 2484) return 14
     if (f >= 2412 && f <= 2472) return (f - 2407) / 5
+    # 6 GHz channel numbers collide with the 2.4/5 GHz numbering, so label the
+    # band instead; these BSSes stay out of the per-channel histograms.
+    if (f >= 5925) return "6G"
     if (f >= 5000) return (f - 5000) / 5
     return "?"
   }
@@ -174,5 +179,5 @@ else
   verdict "${COUNT} access point(s) visible (none on 2.4 GHz)." \
     "$NEXT"
 fi
-echo "finished: $(timestamp_local)"
+finished
 exit 0

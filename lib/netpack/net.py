@@ -1,6 +1,7 @@
-"""Network helpers: interface resolution, gateway lookup, privilege checks.
+"""Network helpers: interface resolution and privilege checks.
 
-Keep iface/gateway/validation in sync with lib/netpack.sh.
+Interface naming and validation rules are mirrored in lib/netpack.sh; keep the
+two in sync. Gateway lookup lives only on the bash side — no Python tool needs it.
 """
 
 from __future__ import annotations
@@ -86,27 +87,6 @@ def default_iface() -> str:
             continue
         return name
     raise NetError("no usable interface found")
-
-
-def default_gateway() -> str | None:
-    try:
-        out = subprocess.check_output(
-            ["ip", "-o", "route", "show", "default"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-    except (
-        subprocess.CalledProcessError,
-        FileNotFoundError,
-        PermissionError,
-        OSError,
-    ):
-        return None
-    for line in out.splitlines():
-        parts = line.split()
-        if "via" in parts:
-            return parts[parts.index("via") + 1]
-    return None
 
 
 def iface_ipv4(iface: str) -> str | None:

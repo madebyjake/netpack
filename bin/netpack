@@ -2,93 +2,65 @@
 # netpack — launcher for network field tools
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resolve symlinks when installed on PATH
 if command -v readlink >/dev/null 2>&1; then
   if resolved="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)"; then
-    ROOT="$(cd "$(dirname "$resolved")" && pwd)"
+    BIN_DIR="$(cd "$(dirname "$resolved")" && pwd)"
   fi
 fi
 
-TOOLS=(
-  dhcpprobe
-  linkstat
-  segscan
-  wifiscan
-  discover
-  splitloss
-  dnscheck
-  webcheck
-  portcheck
-  mtucheck
-  path3
-  udp-loss
-  mcastcheck
-  ringcap
-  testsrv
-  testcli
-  doctor
+# Menu sections: "Title:tool tool ...". Single source of truth for both the
+# tool list and the menu numbering, so numbers stay stable as long as new tools
+# are appended within their section.
+SECTIONS=(
+  "Segment & link:dhcpprobe linkstat segscan wifiscan discover"
+  "Reachability & path:splitloss dnscheck webcheck portcheck mtucheck path3 udp-loss"
+  "Streams & capture:mcastcheck ringcap"
+  "Throughput — planned tests only:testsrv testcli"
 )
 
-describe() {
-  case "$1" in
-    doctor)    echo "Dependency and readiness checks" ;;
-    dhcpprobe) echo "DHCP servers on the local segment" ;;
-    linkstat)  echo "Link counters; physical vs congestion signals" ;;
-    segscan)   echo "Segment inventory (LLDP, gateway, ARP)" ;;
-    wifiscan)  echo "Wi-Fi AP survey and channel usage" ;;
-    discover)  echo "SSDP/mDNS service discovery" ;;
-    splitloss) echo "Concurrent gateway vs WAN loss comparison" ;;
-    dnscheck)  echo "Configured vs public DNS resolver comparison" ;;
-    webcheck)  echo "Captive portal / HTTP + TLS interception check" ;;
-    portcheck) echo "TCP service reachability by port" ;;
-    mtucheck)  echo "Path MTU probe to gateway and WAN" ;;
-    path3)     echo "mtr over ICMP, UDP, and TCP" ;;
-    udp-loss)  echo "UDP loss via DNS queries with real replies" ;;
-    mcastcheck) echo "Multicast delivery check (Dante/NDI paths)" ;;
-    ringcap)   echo "Rotating packet capture ring buffer" ;;
-    testsrv)   echo "iperf3 server with timed firewall open" ;;
-    testcli)   echo "iperf3 client companion to testsrv" ;;
-    *)         echo "" ;;
-  esac
-}
+TOOLS=()
+_section_tools=()
+for _section in "${SECTIONS[@]}"; do
+  read -r -a _section_tools <<<"${_section#*:}"
+  TOOLS+=("${_section_tools[@]}")
+done
+# doctor is keyed 'd' in the menu rather than numbered, so it sits outside the
+# sections but is still a runnable tool name.
+TOOLS+=(doctor)
+unset _section _section_tools
 
-# Tools that require (or commonly require) root; tagged in menu and list.
-sudo_tag() {
-  case "$1" in
-    dhcpprobe|segscan|wifiscan|path3|ringcap|testsrv) echo "[sudo]" ;;
-    *) echo "" ;;
-  esac
-}
+# Tool metadata (root/traffic/description/impact) is shared with bin/doctor.
+# shellcheck source=../lib/netpack/tools.sh
+if ! source "${BIN_DIR}/../lib/netpack/tools.sh"; then
+  echo "error: cannot load ${BIN_DIR}/../lib/netpack/tools.sh" >&2
+  exit 1
+fi
 
-# Tools that generate network activity; tagged in menu and list.
-# [warn] = significant load or active probing (may look like recon/intrusion).
-# [note] = lighter diagnostic traffic.
-impact_tag() {
-  case "$1" in
-    segscan|path3|testsrv|testcli) echo "[warn]" ;;
-    dhcpprobe|wifiscan|discover|splitloss|udp-loss|mtucheck|portcheck|mcastcheck) echo "[note]" ;;
-    *) echo "" ;;
-  esac
-}
+# Snapshot any inherited LINES up front: bash's checkwinsize can rewrite it
+# between commands, which would make the menu layout flicker between draws.
+NP_LINES=${LINES:-}
 
-# Tools that cannot do anything useful without root (subset of sudo_tag).
-needs_root() {
-  case "$1" in
-    dhcpprobe|wifiscan|ringcap) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Set to (sudo) by the menu flow; empty for direct invocation.
-RUN_PREFIX=()
+# Amber heading/[note], red [warn], blue root, green ok; honor NO_COLOR / non-TTY.
+C_AMBER='' C_BOLD='' C_DIM='' C_WARN='' C_ROOT='' C_OK='' C_OFF=''
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_AMBER=$'\033[38;5;214m'
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
+  C_WARN=$'\033[31m'
+  C_ROOT=$'\033[34m'
+  C_OK=$'\033[32m'
+  C_OFF=$'\033[0m'
+fi
 
 netpack_version() {
-  local init="${ROOT}/../lib/netpack/__init__.py"
+  local init="${BIN_DIR}/../lib/netpack/__init__.py"
   if [[ -f "$init" ]]; then
     sed -n 's/^__version__ = "\(.*\)"/\1/p' "$init" | head -1
   else
-    echo "0.1.0"
+    # Matches lib/netpack.sh netpack_version when the Python lib is missing.
+    echo "unknown"
   fi
 }
 
@@ -110,14 +82,19 @@ Also available as: netpack | npk
 Tools:
 EOF
   for t in "${TOOLS[@]}"; do
-    printf "  %-10s  %-6s %-9s  %s\n" "$t" "$(sudo_tag "$t")" "$(impact_tag "$t")" "$(describe "$t")"
+    tool_row "" "$t"
   done
+  echo
+  print_legend
   cat <<'EOF'
 
-[sudo]    marks tools that need root for some or all operations.
-[note]    marks tools that generate light diagnostic traffic.
-[warn]    marks tools with significant load or active probing
-          (may look like recon on a third-party network) — planned tests only.
+Menu keys:
+  N | <tool>           Run by number or by name
+  N <args>             Run with arguments, skipping the prompts (e.g. 2 -t 30)
+  ?N | ?<tool>         Show that tool's --help
+  d                    doctor
+  r                    Repeat the previous run
+  q | Ctrl-D           Quit
 
 Options:
   -h, --help, help     Show this help
@@ -128,147 +105,111 @@ Tools are also available directly from this directory when it is on PATH.
 EOF
 }
 
-list_tools() {
-  local t st it c_tag
-  local c_amber='' c_bold='' c_note='' c_warn='' c_off=''
-  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-    c_amber=$'\033[38;5;214m'
-    c_bold=$'\033[1m'
-    c_note=$'\033[38;5;214m'
-    c_warn=$'\033[31m'
-    c_off=$'\033[0m'
+# Tag legend, shared by help, list and menu.
+print_legend() {
+  printf '  %ssudo%s   needs root (auto-elevates)\n' "$C_ROOT" "$C_OFF"
+  printf '  %ssudo?%s  better with root (asks at launch)\n' "$C_DIM" "$C_OFF"
+  printf '  %sprobe%s  sends light diagnostic traffic\n' "$C_AMBER" "$C_OFF"
+  printf '  %sLOUD%s   heavy traffic or active probing — authorized, planned use only\n' \
+    "$C_WARN" "$C_OFF"
+}
+
+# One tool row. NUM may be a number, a letter key, or empty for `list`.
+# sudo column: 'sudo' (blue) = root required, 'sudo?' (dim) = asks at launch.
+tool_row() {
+  local num=$1 name=$2
+  local sudo_txt='' c_sudo='' traffic c_traffic=''
+  # The table stores the tags exactly as rendered; only the color is derived.
+  sudo_txt="${TOOL_ROOT[$name]:-}"
+  case "$sudo_txt" in
+    sudo)    c_sudo=$C_ROOT ;;
+    'sudo?') c_sudo=$C_DIM ;;
+  esac
+  traffic="${TOOL_TRAFFIC[$name]:-}"
+  case "$traffic" in
+    LOUD)  c_traffic=$C_WARN ;;
+    probe) c_traffic=$C_AMBER ;;
+  esac
+  if [[ -n "$num" ]]; then
+    printf '  %2s) ' "$num"
+  else
+    printf '  '
   fi
-  printf '%snetpack (npk)   v%s%s\n' "$c_amber" "$(netpack_version)" "$c_off"
+  printf '%s%-10s%s  %s%-5s%s  %s%-5s%s   %s\n' \
+    "$C_BOLD" "$name" "$C_OFF" \
+    "$c_sudo" "$sudo_txt" "$C_OFF" \
+    "$c_traffic" "$traffic" "$C_OFF" \
+    "$(describe "$name")"
+}
+
+# Flat, stable listing: one tool per line, no section headers, so it stays easy
+# to grep and parse. The interactive menu is the grouped, human-facing view.
+list_tools() {
+  local t
+  printf '%snetpack (npk)   v%s%s\n' "$C_AMBER" "$(netpack_version)" "$C_OFF"
   echo
   for t in "${TOOLS[@]}"; do
-    st="$(sudo_tag "$t")"
-    it="$(impact_tag "$t")"
-    c_tag=$c_note
-    [[ "$it" == "[warn]" ]] && c_tag=$c_warn
-    printf "  %s%-10s%s  %-6s %s%-6s%s    %s\n" \
-      "$c_bold" "$t" "$c_off" \
-      "$st" \
-      "$c_tag" "$it" "$c_off" \
-      "$(describe "$t")"
+    tool_row "" "$t"
   done
   echo
-  printf '  [sudo]    needs root\n'
-  printf '  %s[note]%s    light diagnostic traffic\n' "$c_note" "$c_off"
-  printf '  %s[warn]%s    significant load or active probing — planned tests only\n' "$c_warn" "$c_off"
+  print_legend
 }
 
-# Prompt for required args when launching from the interactive menu.
-menu_args_for() {
-  local name=$1
-  local val p
-  case "$name" in
-    portcheck)
-      printf "HOST (required): " >&2
-      if ! read -r val; then
-        echo >&2
-        exit 1
-      fi
-      [[ -n "$val" ]] || { echo "error: HOST required" >&2; exit 1; }
-      printf '%s\n' "$val"
-      printf "PORT(S), space-separated (required): " >&2
-      if ! read -r val; then
-        echo >&2
-        exit 1
-      fi
-      [[ -n "$val" ]] || { echo "error: PORT required" >&2; exit 1; }
-      for p in $val; do
-        printf '%s\n' "$p"
-      done
-      ;;
-    path3)
-      printf "TARGET (required): " >&2
-      if ! read -r val; then
-        echo >&2
-        exit 1
-      fi
-      [[ -n "$val" ]] || { echo "error: TARGET required" >&2; exit 1; }
-      printf '%s\n' "$val"
-      ;;
-    ringcap)
-      printf "Output directory -d DIR (required): " >&2
-      if ! read -r val; then
-        echo >&2
-        exit 1
-      fi
-      [[ -n "$val" ]] || { echo "error: -d DIR required" >&2; exit 1; }
-      printf -- '%s\n' -d "$val"
-      ;;
-    testcli)
-      printf "HOST (required): " >&2
-      if ! read -r val; then
-        echo >&2
-        exit 1
-      fi
-      [[ -n "$val" ]] || { echo "error: HOST required" >&2; exit 1; }
-      printf '%s\n' "$val"
-      ;;
-  esac
-}
-
-run_tool() {
-  local name=$1
-  shift
-  local path="${ROOT}/${name}"
-  if [[ ! -x "$path" ]]; then
-    echo "error: tool not found or not executable: ${name}" >&2
-    echo "hint: run 'netpack list'" >&2
-    exit 1
+# Terminal height, for deciding how much menu decoration fits. An inherited
+# LINES wins, as elsewhere in POSIX tooling; otherwise ask the terminal (which
+# also picks up window resizes between draws).
+term_rows() {
+  local rows="$NP_LINES"
+  if [[ ! "$rows" =~ ^[0-9]+$ ]] && command -v tput >/dev/null 2>&1; then
+    rows="$(tput lines 2>/dev/null || true)"
   fi
-  exec "${RUN_PREFIX[@]+"${RUN_PREFIX[@]}"}" "$path" "$@"
+  [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+  printf '%s\n' "$rows"
 }
 
-run_tool_from_menu() {
-  local name=$1
-  local -a args=()
-  local line ans
-  if [[ -n "$(sudo_tag "$name")" && "$(id -u)" -ne 0 ]] \
-      && command -v sudo >/dev/null 2>&1; then
-    if needs_root "$name"; then
-      echo "  ${name} requires root; using sudo" >&2
-      RUN_PREFIX=(sudo)
+# Orientation line: which interface, address and gateway the defaults will use,
+# plus privilege state. Never fatal — a missing piece is itself evidence, so it
+# renders in red instead of aborting the menu.
+print_context() {
+  local iface='' addr='' gw=''
+  iface="$(ip -o route get 1.1.1.1 2>/dev/null \
+    | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')" || true
+  if [[ -z "$iface" ]]; then
+    iface="$(ip -o -4 addr show scope global 2>/dev/null | awk 'NR == 1 { print $2 }')" || true
+  fi
+  if [[ -n "$iface" ]]; then
+    addr="$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null \
+      | awk 'NR == 1 { print $4 }')" || true
+  fi
+  gw="$(ip -o route show default 2>/dev/null \
+    | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}')" || true
+
+  printf '  %slink%s  ' "$C_DIM" "$C_OFF"
+  if [[ -n "$iface" ]]; then
+    printf '%s%s%s ' "$C_BOLD" "$iface" "$C_OFF"
+    if [[ -n "$addr" ]]; then
+      printf '%s' "$addr"
     else
-      printf "  %s uses root for full results; run with sudo? [Y/n]: " "$name" >&2
-      if ! read -r ans; then
-        echo >&2
-        exit 1
-      fi
-      case "$ans" in
-        n|N|no|NO) ;;
-        *) RUN_PREFIX=(sudo) ;;
-      esac
+      printf '%sno address%s' "$C_WARN" "$C_OFF"
     fi
+  else
+    printf '%sno interface%s' "$C_WARN" "$C_OFF"
   fi
-  # Command substitution (not process substitution) so an exit 1 inside
-  # menu_args_for aborts the launch instead of running the tool with no args.
-  local out
-  if ! out="$(menu_args_for "$name")"; then
-    exit 1
+  printf '  %sgw%s ' "$C_DIM" "$C_OFF"
+  if [[ -n "$gw" ]]; then
+    printf '%s' "$gw"
+  else
+    printf '%snone%s' "$C_WARN" "$C_OFF"
   fi
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && args+=("$line")
-  done <<<"$out"
-  run_tool "$name" "${args[@]+"${args[@]}"}"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    printf '  %sroot%s\n' "$C_ROOT" "$C_OFF"
+  else
+    printf '  %sroot: no%s\n' "$C_DIM" "$C_OFF"
+  fi
 }
 
-menu() {
-  local i=1 t sel st it c_tag
-  local c_amber='' c_bold='' c_note='' c_warn='' c_root='' c_off=''
-  local -a numbered=()
-  # Amber heading/[note], red [warn], blue root; honor NO_COLOR / non-TTY.
-  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-    c_amber=$'\033[38;5;214m'
-    c_bold=$'\033[1m'
-    c_note=$'\033[38;5;214m'
-    c_warn=$'\033[31m'
-    c_root=$'\033[34m'
-    c_off=$'\033[0m'
-  fi
-  printf '%s' "$c_amber"
+print_banner() {
+  printf '%s' "$C_AMBER"
   cat <<'EOF'
 
                _                    _
@@ -280,80 +221,423 @@ menu() {
 EOF
   echo
   printf "  netpack (npk)   v%s\n" "$(netpack_version)"
-  printf '%s' "$c_off"
+  printf '%s' "$C_OFF"
+}
+
+print_keys() {
   echo
-  for t in "${TOOLS[@]}"; do
-    [[ "$t" == doctor ]] && continue
-    numbered+=("$t")
-    st="$(sudo_tag "$t")"
-    it="$(impact_tag "$t")"
-    c_tag=$c_note
-    [[ "$it" == "[warn]" ]] && c_tag=$c_warn
-    printf "  %2d) %s%-10s%s  %-6s %s%-6s%s    %s\n" \
-      "$i" \
-      "$c_bold" "$t" "$c_off" \
-      "$st" \
-      "$c_tag" "$it" "$c_off" \
-      "$(describe "$t")"
-    i=$((i + 1))
+  printf '  %sMenu keys%s\n' "$C_AMBER" "$C_OFF"
+  printf '    %-20s %s\n' "N | <tool>" "run by number or by name (e.g. 11, path3)"
+  printf '    %-20s %s\n' "N <args>" "run with arguments, skipping prompts (e.g. 2 -t 30)"
+  printf '    %-20s %s\n' "?N | ?<tool>" "show that tool's --help (e.g. ?11)"
+  printf '    %-20s %s\n' "d" "doctor — dependency and readiness checks"
+  printf '    %-20s %s\n' "r" "repeat the previous run"
+  printf '    %-20s %s\n' "q | Ctrl-D" "quit"
+  echo
+  printf '  %sPrompts appear only for values a tool cannot default. Supplying\n' "$C_DIM"
+  printf '  arguments inline skips them entirely.%s\n' "$C_OFF"
+}
+
+MENU_TOOLS=()   # menu number (1-based) -> tool name
+LAST_RUN=()     # most recent menu invocation: [sudo] tool args...
+
+build_menu_index() {
+  local section
+  local -a section_tools=()
+  MENU_TOOLS=()
+  for section in "${SECTIONS[@]}"; do
+    read -r -a section_tools <<<"${section#*:}"
+    MENU_TOOLS+=("${section_tools[@]}")
   done
-  echo
-  printf "  %2s) %s%-10s%s  %-6s %-6s    %s\n" \
-    d \
-    "$c_bold" "doctor" "$c_off" \
-    "" \
-    "" \
-    "$(describe doctor)"
-  printf "  %2s) %s%-10s%s  %-6s %-6s    %s\n" \
-    q \
-    "$c_bold" "quit" "$c_off" \
-    "" \
-    "" \
-    "Exit"
-  echo
-  if [[ "$(id -u)" -eq 0 ]]; then
-    printf '  [sudo]    %srunning as root!%s\n' "$c_root" "$c_off"
+}
+
+# A non-tool menu row, aligned with the tag columns tool_row uses.
+plain_row() {
+  printf '  %2s) %s%-10s%s  %-5s  %-5s   %s\n' \
+    "$1" "$C_BOLD" "$2" "$C_OFF" "" "" "$3"
+}
+
+# render_menu BANNER SECTIONS LEGEND — emit the menu body at one decoration
+# level. draw_menu picks the richest level that fits the terminal.
+render_menu() {
+  local banner=$1 sections=$2 legend=$3
+  local section title name i=1
+  local -a section_tools=()
+  if (( banner )); then
+    print_banner
   else
-    printf '  [sudo]    needs root (you are not root)\n'
+    printf '\n  %snetpack (npk)   v%s%s\n' "$C_AMBER" "$(netpack_version)" "$C_OFF"
   fi
-  printf '  %s[note]%s    light diagnostic traffic\n' "$c_note" "$c_off"
-  printf '  %s[warn]%s    significant load or active probing — planned tests only\n' "$c_warn" "$c_off"
   echo
-  printf '%s  Select option (q to quit): %s' "$c_amber" "$c_off"
-  if ! read -r sel; then
-    echo >&2
-    exit 1
-  fi
-  case "$sel" in
-    q|Q|quit|QUIT|cancel|CANCEL|"")
+  print_context
+  if (( sections )); then
+    for section in "${SECTIONS[@]}"; do
+      title=${section%%:*}
+      read -r -a section_tools <<<"${section#*:}"
       echo
-      printf '%sBye!%s\n' "$c_amber" "$c_off"
-      exit 0
+      printf '  %s%s%s\n' "$C_DIM" "$title" "$C_OFF"
+      for name in "${section_tools[@]}"; do
+        tool_row "$i" "$name"
+        i=$((i + 1))
+      done
+    done
+  else
+    echo
+    for name in "${MENU_TOOLS[@]}"; do
+      tool_row "$i" "$name"
+      i=$((i + 1))
+    done
+  fi
+  echo
+  tool_row d doctor
+  if (( ${#LAST_RUN[@]} )); then
+    plain_row r repeat "${LAST_RUN[*]}"
+  fi
+  plain_row q quit Exit
+  echo
+  if (( legend )); then
+    print_legend
+  else
+    printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sLOUD%s planned tests only\n' \
+      "$C_ROOT" "$C_OFF" "$C_DIM" "$C_OFF" "$C_AMBER" "$C_OFF" "$C_WARN" "$C_OFF"
+  fi
+  echo
+}
+
+# Decoration levels, richest first: "banner sections legend". Rendering is
+# cheap, so the fit test measures real output instead of guessing row counts.
+MENU_LEVELS=("1 1 1" "0 1 1" "0 1 0" "0 0 0")
+
+# draw_menu ALLOW_BANNER — sheds decoration on short terminals so the tool rows
+# and the prompt stay on screen (the uConsole console is not tall).
+draw_menu() {
+  local allow_banner=$1
+  local rows level
+  local -a lines=() opts=()
+  rows="$(term_rows)"
+  for level in "${MENU_LEVELS[@]}"; do
+    read -r -a opts <<<"$level"
+    (( allow_banner )) || opts[0]=0
+    mapfile -t lines < <(render_menu "${opts[0]}" "${opts[1]}" "${opts[2]}")
+    # +1 leaves room for the prompt line that follows.
+    if (( ${#lines[@]} + 1 <= rows )); then
+      break
+    fi
+  done
+  printf '%s\n' "${lines[@]}"
+}
+
+# --- interactive helpers -----------------------------------------------------
+
+# ask_value LABEL [DEFAULT] -> REPLY_VALUE. Empty input takes DEFAULT, or
+# re-prompts when there is none. Returns 1 on 'q'/EOF so the caller can cancel
+# back to the menu instead of exiting.
+REPLY_VALUE=''
+ask_value() {
+  local label=$1 default=${2:-} val
+  while :; do
+    if [[ -n "$default" ]]; then
+      printf '  %s [%s]: ' "$label" "$default"
+    else
+      printf '  %s: ' "$label"
+    fi
+    if ! read -r val; then
+      echo
+      return 1
+    fi
+    case "$val" in
+      q|Q) return 1 ;;
+    esac
+    if [[ -z "$val" ]]; then
+      if [[ -n "$default" ]]; then
+        REPLY_VALUE=$default
+        return 0
+      fi
+      printf '  %srequired — enter a value, or q to cancel%s\n' "$C_AMBER" "$C_OFF"
+      continue
+    fi
+    REPLY_VALUE=$val
+    return 0
+  done
+}
+
+# ask_choice LABEL DEFAULT CHOICE... -> REPLY_VALUE. Returns 1 on cancel.
+ask_choice() {
+  local label=$1 default=$2
+  shift 2
+  local -a choices=("$@")
+  local c val
+  while :; do
+    printf '  %s (%s) [%s]: ' "$label" "$(IFS='/'; echo "${choices[*]}")" "$default"
+    if ! read -r val; then
+      echo
+      return 1
+    fi
+    case "$val" in
+      q|Q) return 1 ;;
+      '') REPLY_VALUE=$default; return 0 ;;
+    esac
+    for c in "${choices[@]}"; do
+      if [[ "$val" == "$c" ]]; then
+        REPLY_VALUE=$val
+        return 0
+      fi
+    done
+    printf '  %sexpected one of: %s%s\n' "$C_AMBER" "${choices[*]}" "$C_OFF"
+  done
+}
+
+# Prompt for the values a tool cannot default, plus explicit mode choices.
+# Fills PROMPT_ARGS; returns 1 when the user cancels.
+PROMPT_ARGS=()
+prompt_args() {
+  local name=$1
+  local -a ports=()
+  PROMPT_ARGS=()
+  case "$name" in
+    portcheck)
+      ask_value "HOST or IP (e.g. 192.168.1.50)" || return 1
+      PROMPT_ARGS+=("$REPLY_VALUE")
+      ask_value "PORT(S), space-separated (e.g. 22 443 5201)" || return 1
+      read -r -a ports <<<"$REPLY_VALUE"
+      PROMPT_ARGS+=("${ports[@]+"${ports[@]}"}")
+      ;;
+    path3)
+      ask_value "TARGET host or IP" "1.1.1.1" || return 1
+      PROMPT_ARGS+=("$REPLY_VALUE")
+      ;;
+    ringcap)
+      ask_value "Output directory (created if missing)" "/tmp/ringcap" || return 1
+      PROMPT_ARGS+=(-d "$REPLY_VALUE")
+      ;;
+    testcli)
+      ask_value "HOST running testsrv (e.g. 192.168.1.50)" || return 1
+      PROMPT_ARGS+=("$REPLY_VALUE")
+      ;;
+    mcastcheck)
+      ask_choice "Mode — recv listens, send transmits probes" recv recv send || return 1
+      PROMPT_ARGS+=("$REPLY_VALUE")
       ;;
   esac
-  echo
+}
+
+tool_path() {
+  local name=$1
+  local path="${BIN_DIR}/${name}"
+  if [[ ! -x "$path" ]]; then
+    echo "error: tool not found or not executable: ${name}" >&2
+    echo "hint: run 'netpack list'" >&2
+    return 1
+  fi
+  printf '%s\n' "$path"
+}
+
+# Resolve a menu selection (number or tool name) to a tool name; empty on miss.
+resolve_selection() {
+  local sel=$1 t
   case "$sel" in
-    d|D|doctor)
-      run_tool_from_menu doctor
-      ;;
+    d|D) printf 'doctor\n'; return 0 ;;
   esac
   if [[ "$sel" =~ ^[0-9]+$ ]]; then
     # 10# guards against leading zeros being read as octal
     sel=$((10#$sel))
-    if (( sel < 1 || sel > ${#numbered[@]} )); then
-      echo "error: invalid selection" >&2
-      exit 1
+    if (( sel >= 1 && sel <= ${#MENU_TOOLS[@]} )); then
+      printf '%s\n' "${MENU_TOOLS[$((sel - 1))]}"
     fi
-    run_tool_from_menu "${numbered[$((sel - 1))]}"
+    return 0
   fi
   for t in "${TOOLS[@]}"; do
     if [[ "$sel" == "$t" ]]; then
-      run_tool_from_menu "$t"
+      printf '%s\n' "$t"
+      return 0
     fi
   done
-  echo "error: unknown tool: ${sel}" >&2
-  echo "hint: run 'netpack list'" >&2
-  exit 1
+}
+
+exit_note() {
+  case "$1" in
+    0)   printf 'clean / expected' ;;
+    1)   printf 'usage, dependency, or permission error' ;;
+    130) printf 'interrupted' ;;
+    *)   printf 'condition found' ;;
+  esac
+}
+
+# Show a tool's own --help without leaving the menu.
+show_tool_help() {
+  local name=$1 path
+  path="$(tool_path "$name")" || return 0
+  echo
+  if [[ -t 0 && -t 1 ]] && command -v less >/dev/null 2>&1; then
+    "$path" --help 2>&1 | less -FRX || true
+  else
+    "$path" --help 2>&1 || true
+  fi
+}
+
+# Run a tool from the menu: decide sudo, collect missing arguments, echo the
+# equivalent command line, then return to the menu with the exit code explained.
+menu_run() {
+  local name=$1
+  shift
+  local -a args=("$@")
+  local -a prefix=()
+  local path rc=0 ans
+  path="$(tool_path "$name")" || return 0
+  echo
+
+  if wants_root "$name" && [[ "$(id -u)" -ne 0 ]] \
+      && command -v sudo >/dev/null 2>&1; then
+    if needs_root "$name"; then
+      prefix=(sudo)
+    else
+      printf '  %s uses root for full results; run with sudo? [Y/n]: ' "$name"
+      if ! read -r ans; then
+        echo
+        return 0
+      fi
+      case "$ans" in
+        n|N|no|NO) ;;
+        q|Q) return 0 ;;
+        *) prefix=(sudo) ;;
+      esac
+    fi
+  fi
+
+  if (( ${#args[@]} == 0 )); then
+    prompt_args "$name" || return 0
+    args=("${PROMPT_ARGS[@]+"${PROMPT_ARGS[@]}"}")
+  fi
+
+  LAST_RUN=("${prefix[@]+"${prefix[@]}"}" "$name" "${args[@]+"${args[@]}"}")
+  # Echo the equivalent command line: reproducible outside the menu, and it
+  # belongs in an evidence timeline.
+  printf '  %s$ %s%s\n' "$C_DIM" "${LAST_RUN[*]}" "$C_OFF"
+  # Consequences at the point of action: LOUD tools state what they will do
+  # to the network before they start doing it.
+  local impact
+  impact="$(impact_note "$name")"
+  if [[ -n "$impact" ]]; then
+    printf '  %sLOUD%s  %s\n' "$C_WARN" "$C_OFF" "$impact"
+  fi
+  echo
+
+  # Ctrl-C is how ringcap, splitloss and mcastcheck recv are meant to be
+  # stopped; ignore it here so stopping the tool returns to the menu.
+  trap ':' INT
+  "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
+  trap - INT
+
+  echo
+  if (( rc == 0 )); then
+    printf '  %s%s exit 0 — %s%s\n' "$C_OK" "$name" "$(exit_note "$rc")" "$C_OFF"
+  elif (( rc == 1 )); then
+    printf '  %s%s exit 1 — %s%s\n' "$C_WARN" "$name" "$(exit_note "$rc")" "$C_OFF"
+  else
+    printf '  %s%s exit %d — %s (meaning: %s --help)%s\n' \
+      "$C_AMBER" "$name" "$rc" "$(exit_note "$rc")" "$name" "$C_OFF"
+  fi
+  pause
+}
+
+pause() {
+  local ans
+  echo
+  printf '  %sEnter for the menu, q to quit: %s' "$C_AMBER" "$C_OFF"
+  if ! read -r ans; then
+    echo
+    quit
+  fi
+  case "$ans" in
+    q|Q|quit|QUIT) quit ;;
+  esac
+}
+
+quit() {
+  echo
+  printf '%sBye!%s\n' "$C_AMBER" "$C_OFF"
+  exit 0
+}
+
+menu() {
+  local sel name banner=1
+  local -a fields=()
+  build_menu_index
+  while :; do
+    draw_menu "$banner"
+    banner=0
+    printf '%s  Select (number or name, ? for keys, q to quit): %s' "$C_AMBER" "$C_OFF"
+    if ! read -r sel; then
+      echo
+      quit
+    fi
+    case "$sel" in
+      q|Q|quit|QUIT|exit|EXIT|cancel|CANCEL) quit ;;
+    esac
+    # Split the line so a selection can carry arguments: "2 -t 30".
+    read -r -a fields <<<"$sel"
+    if (( ${#fields[@]} == 0 )); then
+      continue
+    fi
+    sel=${fields[0]}
+    fields=("${fields[@]:1}")
+    # Accept both "?11" and "? 11".
+    if [[ "$sel" == '?' && ${#fields[@]} -gt 0 ]]; then
+      sel="?${fields[0]}"
+      fields=("${fields[@]:1}")
+    fi
+    case "$sel" in
+      '?'|h|H|help)
+        print_keys
+        pause
+        continue
+        ;;
+      '?'*)
+        name="$(resolve_selection "${sel#\?}")"
+        if [[ -z "$name" ]]; then
+          printf '\n  %sno such tool: %s%s\n' "$C_WARN" "${sel#\?}" "$C_OFF"
+        else
+          show_tool_help "$name"
+        fi
+        pause
+        continue
+        ;;
+      r|R)
+        if (( ${#LAST_RUN[@]} == 0 )); then
+          printf '\n  %snothing to repeat yet%s\n' "$C_AMBER" "$C_OFF"
+          pause
+          continue
+        fi
+        # LAST_RUN may start with sudo; menu_run re-derives privilege itself.
+        fields=("${LAST_RUN[@]}")
+        if [[ "${fields[0]}" == sudo ]]; then
+          fields=("${fields[@]:1}")
+        fi
+        name=${fields[0]}
+        fields=("${fields[@]:1}")
+        menu_run "$name" "${fields[@]+"${fields[@]}"}"
+        continue
+        ;;
+    esac
+    name="$(resolve_selection "$sel")"
+    if [[ -z "$name" ]]; then
+      printf '\n  %sunknown selection: %s%s\n' "$C_WARN" "$sel" "$C_OFF"
+      printf '  %stry a number 1-%d, a tool name, or ? for the keys%s\n' \
+        "$C_DIM" "${#MENU_TOOLS[@]}" "$C_OFF"
+      pause
+      continue
+    fi
+    menu_run "$name" "${fields[@]+"${fields[@]}"}"
+  done
+}
+
+# Direct invocation: exec so the tool's exit code is netpack's exit code.
+run_tool() {
+  local name=$1
+  shift
+  local path
+  path="$(tool_path "$name")" || exit 1
+  exec "$path" "$@"
 }
 
 main() {
@@ -365,12 +649,7 @@ main() {
       usage
       ;;
     -V|--version)
-      local c_amber='' c_off=''
-      if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-        c_amber=$'\033[38;5;214m'
-        c_off=$'\033[0m'
-      fi
-      printf '%snetpack (npk)   v%s%s\n' "$c_amber" "$(netpack_version)" "$c_off"
+      printf '%snetpack (npk)   v%s%s\n' "$C_AMBER" "$(netpack_version)" "$C_OFF"
       ;;
     list|ls)
       list_tools
@@ -391,4 +670,7 @@ main() {
   esac
 }
 
-main "$@"
+# Tests source this file to inspect the tool metadata; skip the menu for them.
+if [[ "${NETPACK_SOURCE_ONLY:-0}" != 1 ]]; then
+  main "$@"
+fi

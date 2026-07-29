@@ -1,6 +1,7 @@
 # Shared helpers for netpack bash tools.
 # shellcheck shell=bash
-# Keep iface/gateway/validation in sync with lib/netpack/net.py.
+# Interface naming/validation rules are mirrored in lib/netpack/net.py; keep the
+# two in sync. Report helpers here mirror lib/netpack/report.py.
 
 netpack_root() {
   local here
@@ -39,14 +40,6 @@ require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
     die "root privileges required; re-run with sudo"
   fi
-}
-
-list_ifaces() {
-  local d
-  for d in /sys/class/net/*; do
-    [[ -d "$d" ]] || continue
-    basename "$d"
-  done
 }
 
 validate_iface() {
@@ -114,6 +107,15 @@ require_uint() {
   fi
 }
 
+# Reject leftover positional arguments. Tools that take none, and tools that
+# have already consumed the ones they expect, call this so a typo'd invocation
+# fails loudly instead of silently running against the defaults.
+no_extra_args() {
+  if [[ $# -gt 0 ]]; then
+    die "unexpected argument: $1"
+  fi
+}
+
 private_tmpdir() {
   local prefix=${1:-netpack}
   umask 077
@@ -122,7 +124,7 @@ private_tmpdir() {
 
 # Stdout report-content colors: only when stdout is a TTY, so redirected or
 # piped evidence stays plain text. Honor NO_COLOR.
-# Green = ok, red = bad/missing, amber = warn/note, blue = VERDICT label.
+# Green = ok, red = bad/missing, amber = warn/note, blue = ASSESSMENT label.
 NP_C_OK='' NP_C_BAD='' NP_C_WARN='' NP_C_VERDICT='' NP_C_OFF=''
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   NP_C_OK=$'\033[32m'
@@ -187,7 +189,7 @@ section() {
 
 verdict() {
   echo "--"
-  printf '%sVERDICT:%s %s\n' "$NP_C_VERDICT" "$NP_C_OFF" "$1"
+  printf '%sASSESSMENT:%s %s\n' "$NP_C_VERDICT" "$NP_C_OFF" "$1"
   if [[ -n "${2:-}" ]]; then
     echo "Next: $2"
   fi
@@ -201,4 +203,9 @@ timestamp_local() {
 # Print a standard tool report header: "name — <iso-local>"
 header() {
   echo "$1 — $(timestamp_local)"
+}
+
+# Closing line for a completed run (matches Python report.finished).
+finished() {
+  echo "finished: $(timestamp_local)"
 }

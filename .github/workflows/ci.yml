@@ -47,15 +47,22 @@ jobs:
           PYTHONPATH=lib pytest -q tests
 
       - name: bats
-        run: bats tests/test_parsers.bats
+        run: bats tests/*.bats
 
       - name: smoke
         run: |
           bin/netpack --version
           bin/netpack help >/dev/null
           bin/npk list
-          # First column of tool rows only; skips the header and the [sudo]/[note]/[warn] legend.
-          mapfile -t tools < <(bin/netpack list | awk 'NR > 2 && $1 ~ /^[a-z0-9-]+$/ { print $1 }')
+          # First column of tool rows only; the tool list ends at the first blank
+          # line after the header, before the sudo/probe/LOUD legend. Stop
+          # is a flag, not `exit`: exiting awk early closes its end of the
+          # pipe while netpack is still writing the legend, and under
+          # netpack's `set -o pipefail` that write fails with EPIPE and
+          # aborts the script (nondeterministically, depending on whether
+          # the kernel pipe buffer fully absorbed the output first).
+          mapfile -t tools < <(bin/netpack list \
+            | awk 'NR > 2 { if (NF == 0) stop = 1; if (!stop && $1 ~ /^[a-z0-9-]+$/) print $1 }')
           (( ${#tools[@]} >= 12 )) || { echo "expected >= 12 tools, got ${#tools[@]}"; exit 1; }
           for t in "${tools[@]}"; do
             echo "--help: $t"

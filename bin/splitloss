@@ -27,6 +27,9 @@ compare an idle run against a run under planned load to show bufferbloat).
 Runs of 120s or longer include a loss timeline: any 60s interval with loss is
 listed with its wall-clock start, for correlating with incident reports.
 
+Ctrl-C ends the window early: the pings print their partial summaries and the
+comparison covers the completed portion.
+
 Usage:
   splitloss [-t SECONDS] [-w WAN_TARGET] [-d DIR]
 
@@ -61,6 +64,8 @@ while getopts ":t:w:d:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 require_uint duration "$T" 1
 require_cmd ping ip
@@ -91,16 +96,40 @@ header splitloss
 echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s"
 # Wall-clock base for the loss timeline: seq N was sent ~N-1 seconds after this.
 START_EPOCH="$(date +%s)"
+
+# Ctrl-C goes to the whole foreground process group: each ping prints its
+# partial summary and exits, and this shell must survive its interrupted
+# wait(s) to parse those summaries. wait_bg re-waits while the child is
+# still alive, so the recorded status is the ping's, not wait's 130.
+INTERRUPTED=0
+trap 'INTERRUPTED=1' INT
+WAIT_RC=0
+wait_bg() {
+  local pid=$1
+  while :; do
+    WAIT_RC=0
+    wait "$pid" || WAIT_RC=$?
+    if (( WAIT_RC > 128 )) && kill -0 "$pid" 2>/dev/null; then
+      continue
+    fi
+    return 0
+  done
+}
+
 set +e
 ping -D -i 1 -w "$T" "$GW"  >"$LOG_GW"  2>&1 &
 P1=$!
 ping -D -i 1 -w "$T" "$WAN" >"$LOG_WAN" 2>&1 &
 P2=$!
-wait "$P1"
-RC1=$?
-wait "$P2"
-RC2=$?
+wait_bg "$P1"
+RC1=$WAIT_RC
+wait_bg "$P2"
+RC2=$WAIT_RC
 set -e
+trap - INT
+if (( INTERRUPTED )); then
+  note "interrupted — summarizing the completed portion of the window"
+fi
 
 # ping returns 1 when some packets are lost but the run completed; 2+ is error.
 if [[ ! -s "$LOG_GW" || ! -s "$LOG_WAN" ]]; then
@@ -181,21 +210,19 @@ fi
 # Enable temp cleanup only for successful interpretation paths.
 CLEAN_TMP=1
 
-finish() { echo "finished: $(timestamp_local)"; }
-
 if awk -v p="$gl" 'BEGIN { exit !(p > 1) }'; then
   verdict "loss to gateway indicates an access-layer problem." \
     "Inspect local switch/AP, cabling, and the gateway path."
-  finish
+  finished
   exit 2
 elif awk -v p="$wl" 'BEGIN { exit !(p > 1) }'; then
   verdict "gateway is clean; WAN path shows loss." \
     "Inspect uplink, venue circuit, and upstream path evidence."
-  finish
+  finished
   exit 3
 else
   verdict "both targets were clean during this window." \
     "If the symptom was active, check application, server, or DNS layers."
-  finish
+  finished
   exit 0
 fi

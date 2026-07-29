@@ -5,6 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# Root/traffic metadata is shared with the launcher, so doctor's "root:" line
+# can never disagree with the sudo column in the menu.
+# shellcheck source=../lib/netpack/tools.sh
+source "${ROOT}/lib/netpack/tools.sh"
 
 usage() {
   cat <<'EOF'
@@ -36,6 +40,8 @@ while getopts ":h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 have() {
   command -v "$1" >/dev/null 2>&1
@@ -68,7 +74,7 @@ echo "root: $(netpack_root)"
 echo "bin:  $(netpack_bin)"
 echo "user: $(id -un) (uid $(id -u))"
 if [[ "$(id -u)" -eq 0 ]]; then
-  printf '%snote: running as root (not required for doctor)%s\n' "$NP_C_BAD" "$NP_C_OFF"
+  note "running as root (not required for doctor)"
 fi
 echo
 
@@ -107,11 +113,23 @@ done
 
 section "per-tool requirements"
 
+# "name (root: required|recommended|not needed[ — detail])". The root word comes
+# from the shared table; DETAIL is doctor-specific nuance about *why*.
 tool_header() {
-  printf '%s (sudo: %s)\n' "$1" "$2"
+  local name=$1 detail=${2:-} root
+  case "${TOOL_ROOT[$name]:-}" in
+    sudo)    root="required" ;;
+    'sudo?') root="recommended" ;;
+    *)       root="not needed" ;;
+  esac
+  if [[ -n "$detail" ]]; then
+    printf '%s (root: %s — %s)\n' "$name" "$root" "$detail"
+  else
+    printf '%s (root: %s)\n' "$name" "$root"
+  fi
 }
 
-tool_header "dhcpprobe" "yes"
+tool_header dhcpprobe
 check_cmd python3 || MISSING=$((MISSING + 1))
 if have python3 && python3 -c 'import scapy' 2>/dev/null; then
   printf '  %-14s %s\n' "scapy" "$(color_status ok)"
@@ -121,83 +139,83 @@ else
 fi
 echo
 
-tool_header "linkstat" "no"
+tool_header linkstat
 check_cmd ip || MISSING=$((MISSING + 1))
 check_optional ethtool
 check_optional iw
 echo
 
-tool_header "segscan" "yes for arp-scan / often for LLDP"
+tool_header segscan "arp-scan needs it; LLDP usually does"
 check_cmd ip || MISSING=$((MISSING + 1))
 check_cmd ping || MISSING=$((MISSING + 1))
 check_optional arp-scan
 check_optional lldpcli
 echo
 
-tool_header "wifiscan" "yes"
+tool_header wifiscan
 check_cmd iw || MISSING=$((MISSING + 1))
 echo
 
-tool_header "discover" "no"
+tool_header discover
 check_cmd python3 || MISSING=$((MISSING + 1))
 echo
 
-tool_header "splitloss" "no"
+tool_header splitloss
 check_cmd ping || MISSING=$((MISSING + 1))
 check_cmd ip || MISSING=$((MISSING + 1))
 echo
 
-tool_header "dnscheck" "no"
+tool_header dnscheck
 check_cmd dig || MISSING=$((MISSING + 1))
 echo
 
-tool_header "webcheck" "no"
+tool_header webcheck
 check_cmd curl || MISSING=$((MISSING + 1))
 echo
 
-tool_header "portcheck" "no"
+tool_header portcheck
 check_cmd timeout || MISSING=$((MISSING + 1))
 echo
 
-tool_header "mtucheck" "no"
+tool_header mtucheck
 check_cmd ping || MISSING=$((MISSING + 1))
 check_cmd ip || MISSING=$((MISSING + 1))
 check_optional tracepath
 echo
 
-tool_header "path3" "yes"
+tool_header path3 "UDP/TCP modes may need CAP_NET_RAW"
 check_cmd mtr || MISSING=$((MISSING + 1))
 check_cmd awk || MISSING=$((MISSING + 1))
 echo
 
-tool_header "udp-loss" "no"
+tool_header udp-loss
 check_cmd dig || MISSING=$((MISSING + 1))
 echo
 
-tool_header "mcastcheck" "no"
+tool_header mcastcheck
 check_cmd python3 || MISSING=$((MISSING + 1))
 echo
 
-tool_header "ringcap" "yes"
+tool_header ringcap
 check_cmd tcpdump || MISSING=$((MISSING + 1))
 echo
 
-tool_header "testsrv" "yes when modifying nft sets"
+tool_header testsrv "only when modifying nft sets"
 check_cmd iperf3 || MISSING=$((MISSING + 1))
 check_optional nft
 echo
 
-tool_header "testcli" "no"
+tool_header testcli
 check_cmd iperf3 || MISSING=$((MISSING + 1))
 echo
 
 if (( MISSING > 0 )); then
   verdict "${MISSING} required dependency check(s) failed." \
     "Install missing packages (see README) and re-run doctor."
-  echo "finished: $(timestamp_local)"
+  finished
   exit 2
 fi
 verdict "required dependencies look present." \
   "Tools that need root still require sudo at run time."
-echo "finished: $(timestamp_local)"
+finished
 exit 0

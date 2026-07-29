@@ -62,6 +62,8 @@ while getopts ":i:s:n:d:f:S:h" opt; do
     *) usage >&2; exit 1 ;;
   esac
 done
+shift $((OPTIND - 1))
+no_extra_args "$@"
 
 [[ -n "$DIR" ]] || die "output directory required (-d DIR)"
 require_uint "file size" "$MB" 1
@@ -77,7 +79,8 @@ ABS_DIR="$(cd "$DIR" && pwd)"
 
 header ringcap
 echo "iface: ${IFACE}"
-echo "output: ${ABS_DIR}/cap-*.pcap  ring ${N}x${MB}MB  snaplen ${SNAPLEN}"
+# tcpdump appends the ring index after the name (cap.pcap0, cap.pcap1, ...).
+echo "output: ${ABS_DIR}/cap.pcap*  ring ${N}x${MB}MB  snaplen ${SNAPLEN}"
 echo "filter: ${FILT:-<none>}"
 echo "Note wall-clock time when the symptom occurs. Stop with Ctrl-C."
 
@@ -85,7 +88,7 @@ cd "$ABS_DIR"
 # Stay root after opening the device so -C rotation can create files in this
 # root-owned 0700 directory (Debian/Ubuntu tcpdump otherwise drops to tcpdump).
 if [[ -n "$FILT" ]]; then
-  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap" "$FILT"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap" "$FILT"
 else
-  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap-.pcap"
+  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap"
 fi

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TextIO
 
@@ -23,8 +23,9 @@ def timestamp_local() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def timestamp_utc() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def header(tool: str) -> None:
+    """Opening line of a tool report (matches the bash header helper)."""
+    print(f"{tool} — {timestamp_local()}")
 
 
 def color_status(kind: StatusKind, text: str | None = None) -> str:
@@ -72,7 +73,7 @@ def progress(message: str, file: TextIO | None = None) -> None:
 
 def verdict(message: str, next_check: str | None = None) -> None:
     print("--")
-    print(f"{_C_VERDICT}VERDICT:{_C_OFF} {message}")
+    print(f"{_C_VERDICT}ASSESSMENT:{_C_OFF} {message}")
     if next_check:
         print(f"Next: {next_check}")
 

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import ipaddress
 import socket
 import sys
@@ -14,17 +13,39 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import report  # noqa: E402
-from netpack.mcast import HEADER_LEN, ProbeStats, decode_probe, encode_probe  # noqa: E402
-from netpack.net import NetError, iface_ipv4, resolve_iface  # noqa: E402
+from netpack import cli, report
+from netpack.mcast import (
+    HEADER_LEN,
+    LIVE_MEDIA_RANGE,
+    ProbeStats,
+    decode_probe,
+    encode_probe,
+    in_live_media_range,
+)
+from netpack.net import NetError, iface_ipv4, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NONE = 2
 EXIT_LOSS = 3
+EXIT_INTERRUPT = 130
 
 DEFAULT_GROUP = "239.192.77.77"
 DEFAULT_PORT = 7788
+DEFAULT_TIMEOUT = 10.0
+DEFAULT_COUNT = 500
+DEFAULT_RATE = 50
+DEFAULT_SIZE = 200
+DEFAULT_TTL = 1
+
+# dest -> (mode it belongs to, flag text for the error message)
+MODE_OPTIONS = {
+    "timeout": ("recv", "-t/--timeout"),
+    "count": ("send", "-c/--count"),
+    "rate": ("send", "-r/--rate"),
+    "size": ("send", "-s/--size"),
+    "ttl": ("send", "-T/--ttl"),
+}
 
 
 def _usage() -> str:
@@ -47,32 +68,41 @@ Pair workflow (one-way delivery proof, like testsrv/testcli):
 Verify a live production flow reaches this drop (passive apart from the join):
   mcastcheck recv -g 239.255.12.34 -p 4321 -t 10
 
-The default group/port (239.192.77.77:7788, organization-local scope) avoids
-Dante's 239.255.0.0/16 media range. Do not 'send' to groups carrying live
-audio/video.
+The default group/port (239.192.77.77:7788) sits in the RFC 2365
+organization-local scope, deliberately outside 239.255.0.0/16 — the range Dante
+allocates media flows from by default. 'send' refuses that range without -y,
+because transmitting into a group carrying live audio disrupts it. The check
+covers the common default only; multicast addresses are configurable, so
+confirm a group is unused before sending to it.
+
+Options are mode-specific and are rejected rather than ignored when they do not
+apply: -t belongs to recv, and -c/-r/-s/-T to send.
 
 Usage:
   mcastcheck [recv] [-g GROUP] [-p PORT] [-i IFACE] [-t SECONDS] [--dump FILE]
   mcastcheck send  [-g GROUP] [-p PORT] [-i IFACE] [-c COUNT] [-r PPS]
-                   [-s BYTES] [-T TTL]
+                   [-s BYTES] [-T TTL] [-y] [--dump FILE]
 
 Options:
   -g, --group ADDR    Multicast group (default: 239.192.77.77)
   -p, --port PORT     UDP port (default: 7788)
   -i, --iface IFACE   Interface (default: kernel default multicast route)
-  -t, --timeout SEC   recv listen window; Ctrl-C ends it early (default: 10)
+  -t, --timeout SEC   recv: listen window; Ctrl-C ends it early (default: 10)
   -c, --count N       send: probe count (default: 500)
   -r, --rate PPS      send: probes per second (default: 50)
   -s, --size BYTES    send: datagram size (default: 200)
   -T, --ttl TTL       send: multicast TTL (default: 1 = local segment only)
+  -y, --yes           send: confirm sending into 239.255.0.0/16
   --dump FILE         Write JSON evidence to FILE
   -h, --help          Show this help
 
 Exit codes:
   0  recv: traffic received (probe loss <= 1%) / send: all probes sent
-  1  usage, socket, or interface error (send: also interrupted)
+  1  usage, socket, or interface error (includes a refused media-range send)
   2  recv: no datagrams within the window
   3  recv: probe traffic with > 1% loss
+  130  send interrupted mid-stream (recv treats Ctrl-C as end-of-window).
+       The report and --dump evidence are still written.
 """
 
 
@@ -142,7 +172,7 @@ def run_recv(
             while time.monotonic() < deadline:
                 try:
                     data, addr = sock.recvfrom(65535)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 now = time.monotonic()
                 key = (addr[0], addr[1])
@@ -170,7 +200,7 @@ def run_recv(
     finally:
         sock.close()
 
-    print(f"mcastcheck — {report.timestamp_local()}")
+    report.header("mcastcheck")
     print(f"mode: recv  group: {group}:{port}  iface: {iface_label}  window: {elapsed:.1f}s")
     print_sources(sources, elapsed)
 
@@ -223,7 +253,7 @@ def run_recv(
                 }
                 for (ip, sport), e in sources.items()
             ],
-            "verdict_code": code,
+            "assessment_code": code,
         }
         path = report.write_dump(dump, payload)
         print(f"dump: {path}")
@@ -264,7 +294,11 @@ def run_send(
                 now = time.monotonic()
                 if next_t > now:
                     time.sleep(next_t - now)
-                payload = encode_probe(seq, time.time(), size)
+                # monotonic, not wall clock: only send/receive *differences*
+                # feed the jitter calculation, so the two clocks need no
+                # relationship — but an NTP step mid-run would show up as a
+                # false jitter spike if this were time.time().
+                payload = encode_probe(seq, time.monotonic(), size)
                 sock.sendto(payload, (group, port))
                 sent += 1
                 sent_bytes += len(payload)
@@ -278,22 +312,30 @@ def run_send(
     finally:
         sock.close()
 
-    print(f"mcastcheck — {report.timestamp_local()}")
+    report.header("mcastcheck")
     print(f"mode: send  group: {group}:{port}  iface: {iface_label}  ttl: {ttl}")
     report.section("sent")
     print(
         f"  {sent}/{count} probes ({sent_bytes} bytes) in {elapsed:.1f}s "
         f"({sent / elapsed:.1f}/s)"
     )
+    # An interrupted run still sent real probes, so it still has to produce its
+    # assessment and its evidence file — Ctrl-C is how a pair test normally ends
+    # once the receiving side has seen enough.
     if interrupted:
+        code = EXIT_INTERRUPT
         report.warning(f"interrupted after {sent} of {count} probes")
-        report.finished()
-        return EXIT_ERROR
-
-    report.verdict(
-        f"{sent} probe(s) sent to {group}:{port}.",
-        "Read loss and jitter on the receiving side (mcastcheck recv).",
-    )
+        report.verdict(
+            f"{sent} of {count} probe(s) sent before the run was interrupted.",
+            "Loss at the receiver will count the probes never sent; compare "
+            "against this sent count, or re-run to completion for a clean figure.",
+        )
+    else:
+        code = EXIT_OK
+        report.verdict(
+            f"{sent} probe(s) sent to {group}:{port}.",
+            "Read loss and jitter on the receiving side (mcastcheck recv).",
+        )
 
     if dump:
         payload = {
@@ -306,25 +348,31 @@ def run_send(
             "bytes": sent_bytes,
             "rate_pps": rate,
             "ttl": ttl,
+            "interrupted": interrupted,
+            "assessment_code": code,
         }
         path = report.write_dump(dump, payload)
         print(f"dump: {path}")
 
     report.finished()
-    return EXIT_OK
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = cli.ArgumentParser(prog="mcastcheck", add_help=False)
     parser.add_argument("mode", nargs="?", default="recv")
     parser.add_argument("-g", "--group", default=DEFAULT_GROUP)
     parser.add_argument("-p", "--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("-i", "--iface")
-    parser.add_argument("-t", "--timeout", type=float, default=10.0)
-    parser.add_argument("-c", "--count", type=int, default=500)
-    parser.add_argument("-r", "--rate", type=int, default=50)
-    parser.add_argument("-s", "--size", type=int, default=200)
-    parser.add_argument("-T", "--ttl", type=int, default=1)
+    # Mode-specific options carry no defaults so an unsupplied one reads as
+    # None; MODE_OPTIONS below turns "supplied for the wrong mode" into an error
+    # instead of a silent no-op. Defaults are applied after the mode is known.
+    parser.add_argument("-t", "--timeout", type=float)
+    parser.add_argument("-c", "--count", type=int)
+    parser.add_argument("-r", "--rate", type=int)
+    parser.add_argument("-s", "--size", type=int)
+    parser.add_argument("-T", "--ttl", type=int)
+    parser.add_argument("-y", "--yes", action="store_true")
     parser.add_argument("--dump")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args(argv)
@@ -336,6 +384,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode not in ("recv", "send"):
         print(f"error: unknown mode: {args.mode} (use recv or send)", file=sys.stderr)
         return EXIT_ERROR
+
+    foreign = cli.foreign_options(args.mode, vars(args), MODE_OPTIONS)
+    if foreign:
+        if len(foreign) > 1:
+            phrase = f"{', '.join(foreign)} options do not apply"
+        else:
+            phrase = f"{foreign[0]} option does not apply"
+        print(f"error: {phrase} to '{args.mode}' mode", file=sys.stderr)
+        print("hint: mcastcheck --help", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.timeout is None:
+        args.timeout = DEFAULT_TIMEOUT
+    if args.count is None:
+        args.count = DEFAULT_COUNT
+    if args.rate is None:
+        args.rate = DEFAULT_RATE
+    if args.size is None:
+        args.size = DEFAULT_SIZE
+    if args.ttl is None:
+        args.ttl = DEFAULT_TTL
+
     try:
         if not ipaddress.IPv4Address(args.group).is_multicast:
             raise ValueError
@@ -359,6 +429,23 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
     if not 1 <= args.ttl <= 255:
         print("error: ttl must be 1-255", file=sys.stderr)
+        return EXIT_ERROR
+
+    # Transmitting into a group that is carrying live audio disrupts a running
+    # show, so the documented "do not send here" rule is enforced rather than
+    # trusted. recv is unaffected: joining is what the tool is for.
+    if args.mode == "send" and in_live_media_range(args.group) and not args.yes:
+        print(
+            f"error: {args.group} is inside {LIVE_MEDIA_RANGE}, the range Dante "
+            "uses for media flows by default",
+            file=sys.stderr,
+        )
+        print(
+            "hint: sending probes to a group carrying live audio/video will "
+            "disrupt it. Use 'mcastcheck recv' to observe the flow instead, or "
+            "pass -y if you have confirmed this group is unused.",
+            file=sys.stderr,
+        )
         return EXIT_ERROR
 
     iface_ip: str | None = None

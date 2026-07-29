@@ -8,11 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack.mcast import (  # noqa: E402
+from netpack.mcast import (
     HEADER_LEN,
+    LIVE_MEDIA_RANGE,
     ProbeStats,
     decode_probe,
     encode_probe,
+    in_live_media_range,
 )
 
 
@@ -81,3 +83,25 @@ def test_stats_empty() -> None:
     s = ProbeStats().summary()
     assert s["received"] == 0
     assert s["loss_pct"] == 0.0
+
+
+def test_live_media_range_covers_dante_default_allocation() -> None:
+    # 239.255.0.0/16 is where Dante allocates media flows by default; sending
+    # probes into a group here can land on live audio.
+    assert str(LIVE_MEDIA_RANGE) == "239.255.0.0/16"
+    assert in_live_media_range("239.255.0.0")
+    assert in_live_media_range("239.255.12.34")
+    assert in_live_media_range("239.255.255.255")
+
+
+def test_netpack_default_group_is_outside_the_media_range() -> None:
+    # The whole point of the default: send can never collide with Dante audio.
+    assert not in_live_media_range("239.192.77.77")
+
+
+def test_neighbouring_and_invalid_addresses_are_not_flagged() -> None:
+    assert not in_live_media_range("239.254.255.255")
+    assert not in_live_media_range("239.69.1.1")
+    assert not in_live_media_range("224.0.0.251")
+    assert not in_live_media_range("not-an-address")
+    assert not in_live_media_range("")

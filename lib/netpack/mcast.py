@@ -8,7 +8,24 @@ not need to be synchronized.
 
 from __future__ import annotations
 
+import ipaddress
 import struct
+
+# Dante allocates multicast media flows from this range by default (RFC 2365
+# calls it the IPv4 Local Scope). Transmitting probes into a group here can land
+# on live audio, so `mcastcheck send` refuses it without explicit confirmation.
+# Not exhaustive: multicast addresses are configurable per deployment and other
+# transports use other ranges, so this blocks the common default, not every risk.
+LIVE_MEDIA_RANGE = ipaddress.IPv4Network("239.255.0.0/16")
+
+
+def in_live_media_range(group: str) -> bool:
+    """True when the group falls in the range Dante uses for media by default."""
+    try:
+        return ipaddress.IPv4Address(group) in LIVE_MEDIA_RANGE
+    except ValueError:
+        return False
+
 
 MAGIC = b"NPKM"
 VERSION = 1

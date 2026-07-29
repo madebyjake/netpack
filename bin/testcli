@@ -42,8 +42,8 @@ Options:
   -p PORT        Server port (default: 5201)
   -t SECONDS     Test duration (default: 30)
   -u             UDP mode (default: TCP)
-  -b BANDWIDTH   UDP target bitrate (default: 5M); ignored for TCP
-  -l LENGTH      UDP payload length (default: 200); ignored for TCP
+  -b BANDWIDTH   UDP target bitrate (default: 5M); requires -u
+  -l LENGTH      UDP payload length (default: 200); requires -u
   -P STREAMS     Parallel streams (default: 1)
   -R             Reverse: server sends (download-direction evidence)
   -h, --help     Show this help
@@ -59,13 +59,14 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+UDP_OPTS=()
 while getopts ":p:t:ub:l:P:Rh" opt; do
   case "$opt" in
     p) PORT=$OPTARG ;;
     t) DURATION=$OPTARG ;;
     u) UDP=1 ;;
-    b) BANDWIDTH=$OPTARG ;;
-    l) LENGTH=$OPTARG ;;
+    b) BANDWIDTH=$OPTARG; UDP_OPTS+=(-b) ;;
+    l) LENGTH=$OPTARG; UDP_OPTS+=(-l) ;;
     P) STREAMS=$OPTARG ;;
     R) REVERSE=1 ;;
     h) usage; exit 0 ;;
@@ -76,10 +77,25 @@ shift $((OPTIND - 1))
 
 HOST=${1:-}
 [[ -n "$HOST" ]] || { usage >&2; exit 1; }
+shift
+no_extra_args "$@"
 require_uint port "$PORT" 1 65535
 require_uint duration "$DURATION" 1
 require_uint length "$LENGTH" 1
 require_uint streams "$STREAMS" 1 128
+
+# Reject UDP-only options in TCP mode rather than dropping them silently: a
+# rate the operator believes they set, but that iperf3 never received, makes
+# the resulting throughput evidence wrong in a way nothing on screen shows.
+# Checked before the dependency probe so a bad invocation is reported as such
+# even where iperf3 is missing.
+if [[ "$UDP" -ne 1 && ${#UDP_OPTS[@]} -gt 0 ]]; then
+  if (( ${#UDP_OPTS[@]} > 1 )); then
+    die "${UDP_OPTS[*]} apply to UDP mode only; add -u"
+  fi
+  die "${UDP_OPTS[0]} applies to UDP mode only; add -u"
+fi
+
 require_cmd iperf3
 
 EXTRA=()

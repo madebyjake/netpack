@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack.discovery import (  # noqa: E402
+from netpack.discovery import (
     decode_name,
     encode_name,
     parse_mdns,

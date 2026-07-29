@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import socket
 import struct
 import sys
@@ -14,11 +13,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import report  # noqa: E402
-from netpack.discovery import encode_name, parse_mdns, parse_ssdp  # noqa: E402
+from netpack import cli, report, services
+from netpack.discovery import encode_name, parse_mdns, parse_ssdp
 
 EXIT_OK = 0
 EXIT_ERROR = 1
+EXIT_INTERRUPT = 130
 
 SSDP_ADDR = ("239.255.255.250", 1900)
 MDNS_ADDR = ("224.0.0.251", 5353)
@@ -37,6 +37,11 @@ cameras, AV gear). IPv4 link-local multicast only; no root required.
 mDNS replies are requested as unicast (QU); responders that only multicast are
 not captured. Best-effort, not exhaustive.
 
+Known service types are annotated with a plain-language label; anything not
+recognized is printed verbatim, so nothing discovered is hidden. Hosts
+advertising real-time AV transports (Dante, NDI) are also listed on their own,
+since those flows depend on clocking, QoS and multicast handling.
+
 Usage:
   discover [-t SECONDS] [--dump FILE]
 
@@ -48,6 +53,7 @@ Options:
 Exit codes:
   0  discovery completed (zero devices is a valid result)
   1  usage, dependency, or socket error
+  130  interrupted before the listen windows completed
 """
 
 
@@ -79,12 +85,12 @@ def _mcast_socket(ttl: int, src_ip: str | None) -> socket.socket:
 
 def ssdp_search(timeout: float, src_ip: str | None) -> tuple[dict[str, dict[str, Any]], str]:
     msg = (
-        "M-SEARCH * HTTP/1.1\r\n"
-        "HOST: 239.255.255.250:1900\r\n"
-        'MAN: "ssdp:discover"\r\n'
-        "MX: 2\r\n"
-        "ST: ssdp:all\r\n\r\n"
-    ).encode()
+        b"M-SEARCH * HTTP/1.1\r\n"
+        b"HOST: 239.255.255.250:1900\r\n"
+        b'MAN: "ssdp:discover"\r\n'
+        b"MX: 2\r\n"
+        b"ST: ssdp:all\r\n\r\n"
+    )
     sock = _mcast_socket(2, src_ip)
     devices: dict[str, dict[str, Any]] = {}
     try:
@@ -96,7 +102,7 @@ def ssdp_search(timeout: float, src_ip: str | None) -> tuple[dict[str, dict[str,
         while time.monotonic() < deadline:
             try:
                 data, addr = sock.recvfrom(65535)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             ip = addr[0]
             headers = parse_ssdp(data)
@@ -126,7 +132,7 @@ def mdns_search(timeout: float, src_ip: str | None) -> tuple[dict[str, set[str]]
         while time.monotonic() < deadline:
             try:
                 data, addr = sock.recvfrom(65535)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             ip = addr[0]
             for rtype, _name, target in parse_mdns(data):
@@ -144,7 +150,7 @@ def print_report(
     ssdp_err: str = "",
     mdns_err: str = "",
 ) -> None:
-    print(f"discover — {report.timestamp_local()}")
+    report.header("discover")
     print(f"window: {timeout:g}s per protocol")
 
     report.section(f"SSDP ({len(ssdp)})")
@@ -166,9 +172,25 @@ def print_report(
         report.warning(f"mDNS query failed: {mdns_err}")
     if not mdns:
         print("  (none)")
+    media_hosts: dict[str, list[str]] = {}
     for ip in sorted(mdns, key=_ip_key):
         svcs = sorted(mdns[ip])
-        print(f"  {ip}  {', '.join(svcs) if svcs else '-'}")
+        labelled = [services.describe_service(s) for s in svcs]
+        print(f"  {ip}  {', '.join(labelled) if labelled else '-'}")
+        found = services.media_services(svcs)
+        if found:
+            media_hosts[ip] = found
+
+    if media_hosts:
+        report.section(f"real-time media advertisers ({len(media_hosts)})")
+        for ip, svcs in media_hosts.items():
+            print(f"  {ip}  {', '.join(services.describe_service(s) for s in svcs)}")
+        report.note(
+            "Dante/NDI transports are sensitive to clocking, QoS marking and "
+            "multicast handling. If these devices misbehave, follow up with "
+            "linkstat (EEE, errors), mcastcheck (group delivery) and splitloss "
+            "(loss under load) at the affected drop."
+        )
 
     total = len(set(ssdp) | set(mdns))
     if total == 0:
@@ -191,7 +213,7 @@ def _ip_key(ip: str) -> tuple:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = cli.ArgumentParser(prog="discover", add_help=False)
     parser.add_argument("-t", "--timeout", type=float, default=3.0)
     parser.add_argument("--dump")
     parser.add_argument("-h", "--help", action="store_true")
@@ -211,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         mdns, mdns_err = mdns_search(args.timeout, src_ip)
     except KeyboardInterrupt:
         print("error: interrupted", file=sys.stderr)
-        return EXIT_ERROR
+        return EXIT_INTERRUPT
 
     if ssdp_err and mdns_err:
         print(
@@ -231,7 +253,18 @@ def main(argv: list[str] | None = None) -> int:
                 {"ip": d["ip"], "server": d["server"], "services": sorted(d["services"])}
                 for d in ssdp.values()
             ],
-            "mdns": [{"ip": ip, "services": sorted(s)} for ip, s in mdns.items()],
+            "mdns": [
+                {
+                    "ip": ip,
+                    "services": sorted(s),
+                    "labels": {
+                        svc: services.label_service(svc)
+                        for svc in sorted(s)
+                        if services.label_service(svc)
+                    },
+                }
+                for ip, s in mdns.items()
+            ],
             "host_count": len(set(ssdp) | set(mdns)),
         }
         path = report.write_dump(args.dump, payload)
