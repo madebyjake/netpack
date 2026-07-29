@@ -23,6 +23,11 @@ def timestamp_local() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def header(tool: str) -> None:
+    """Opening line of a tool report (matches the bash header helper)."""
+    print(f"{tool} — {timestamp_local()}")
+
+
 def color_status(kind: StatusKind, text: str | None = None) -> str:
     """Colored status token. Defaults: OK / MISSING / (text required for warn)."""
     if kind == "ok":
@@ -68,7 +73,7 @@ def progress(message: str, file: TextIO | None = None) -> None:
 
 def verdict(message: str, next_check: str | None = None) -> None:
     print("--")
-    print(f"{_C_VERDICT}VERDICT:{_C_OFF} {message}")
+    print(f"{_C_VERDICT}ASSESSMENT:{_C_OFF} {message}")
     if next_check:
         print(f"Next: {next_check}")
 
