@@ -41,14 +41,6 @@ require_root() {
   fi
 }
 
-list_ifaces() {
-  local d
-  for d in /sys/class/net/*; do
-    [[ -d "$d" ]] || continue
-    basename "$d"
-  done
-}
-
 validate_iface() {
   local iface=$1
   if [[ ! "$iface" =~ ^[A-Za-z0-9._@:+=-]+$ ]]; then

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TextIO
 
@@ -21,10 +21,6 @@ StatusKind = Literal["ok", "bad", "warn"]
 
 def timestamp_local() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def timestamp_utc() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def color_status(kind: StatusKind, text: str | None = None) -> str:
