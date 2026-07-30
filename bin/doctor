@@ -172,8 +172,9 @@ check_cmd ping || MISSING=$((MISSING + 1))
 check_cmd ip || MISSING=$((MISSING + 1))
 echo
 
-tool_header dnscheck
+tool_header dnscheck "resolvectl exposes the real upstreams behind resolved's stub"
 check_cmd dig || MISSING=$((MISSING + 1))
+check_optional resolvectl
 echo
 
 tool_header webcheck

@@ -70,6 +70,74 @@ bucket_loss() {
   ' "$file"
 }
 
+# --- DNS resolver enumeration -------------------------------------------------
+#
+# /etc/resolv.conf is not a reliable list of upstream resolvers: under
+# systemd-resolved it holds a single loopback stub (127.0.0.53) that forwards to
+# servers the file never names. Comparing that stub against a public baseline
+# proves nothing about the upstreams — and when resolved forwards to the same
+# public resolver, it compares that resolver against itself and reads as clean.
+# parse_resolvectl_dns recovers the real per-link upstreams; is_stub_addr lets
+# dnscheck say so when only a stub could be found.
+
+# Parse `resolvectl dns` output into "iface<TAB>server" rows, one per server.
+# Input lines are "Global: 1.1.1.1" or "Link 2 (eth0): 8.8.8.8 1.1.1.1"; links
+# with no servers produce no rows. DNS-over-TLS pins (1.1.1.1#cloudflare-dns.com)
+# and link scopes (fe80::1%eth0) are trimmed to the bare address.
+# Reads FILE when given, else stdin (dnscheck pipes resolvectl straight in).
+parse_resolvectl_dns() {
+  awk '
+    {
+      iface = ""
+      rest = ""
+      if ($0 ~ /^Global:/) {
+        iface = "global"
+        rest = substr($0, 8)
+      } else if (match($0, /^Link [0-9]+ \([^)]*\):/)) {
+        hdr = substr($0, 1, RLENGTH)
+        rest = substr($0, RLENGTH + 1)
+        open_paren = index(hdr, "(")
+        close_paren = index(hdr, ")")
+        iface = substr(hdr, open_paren + 1, close_paren - open_paren - 1)
+      } else {
+        next
+      }
+      n = split(rest, fields, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        addr = fields[i]
+        sub(/#.*$/, "", addr)
+        sub(/%.*$/, "", addr)
+        if (addr != "") print iface "\t" addr
+      }
+    }
+  ' ${1:+"$1"}
+}
+
+# Parse nameserver addresses from resolv.conf text, one per line, in file order.
+# Comments (; and #) are ignored, as resolv.conf(5) specifies.
+# Reads FILE when given, else stdin.
+parse_resolv_conf() {
+  awk '
+    /^[[:space:]]*[;#]/ { next }
+    /^[[:space:]]*nameserver[[:space:]]+/ {
+      addr = $2
+      sub(/%.*$/, "", addr)
+      if (addr != "") print addr
+    }
+  ' ${1:+"$1"}
+}
+
+# True for loopback addresses — the shape of a local forwarding stub
+# (systemd-resolved 127.0.0.53, dnsmasq 127.0.0.1, ::1).
+is_stub_addr() {
+  [[ "${1:-}" =~ ^127\. || "${1:-}" == "::1" ]]
+}
+
+# Read "key<TAB>value" rows on stdin and drop rows whose value was already seen,
+# keeping the first occurrence (and so its key). Order is preserved.
+dedupe_by_value() {
+  awk -F'\t' '!seen[$2]++'
+}
 # Extract final-hop host, loss, and avg from an mtr report file.
 summarize_final() {
   local file=$1

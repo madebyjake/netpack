@@ -62,3 +62,49 @@ setup() {
   run bucket_loss "${FIXTURES}/ping_clean.txt" 60
   [ "$status" -ne 0 ]
 }
+
+@test "parse_resolvectl_dns pairs each server with its link" {
+  # Trims the DoT pin on 1.1.1.1 and the link scope on fe80::1; the link with
+  # no servers (enp0s20f0u2u1c2) contributes no row.
+  run parse_resolvectl_dns "${FIXTURES}/resolvectl_dns.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'eno1\t8.8.8.8\neno1\t1.1.1.1\nwt0\t100.100.8.136\ntun0\tfe80::1\ntun0\t8.8.8.8' ]
+}
+
+@test "parse_resolvectl_dns ignores output with no link lines" {
+  output="$(printf 'Global:\n' | parse_resolvectl_dns)"
+  [ "$output" = "" ]
+}
+
+@test "parse_resolv_conf reads nameservers and skips comments" {
+  run parse_resolv_conf "${FIXTURES}/resolv_conf_real.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'192.168.1.1\n8.8.8.8\n192.168.1.1' ]
+}
+
+@test "parse_resolv_conf reads the systemd-resolved stub" {
+  run parse_resolv_conf "${FIXTURES}/resolv_conf_stub.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "127.0.0.53" ]
+}
+
+@test "is_stub_addr recognizes loopback forwarders" {
+  run is_stub_addr 127.0.0.53
+  [ "$status" -eq 0 ]
+  run is_stub_addr 127.0.0.1
+  [ "$status" -eq 0 ]
+  run is_stub_addr ::1
+  [ "$status" -eq 0 ]
+}
+
+@test "is_stub_addr does not flag real upstreams" {
+  run is_stub_addr 8.8.8.8
+  [ "$status" -ne 0 ]
+  run is_stub_addr 192.168.1.1
+  [ "$status" -ne 0 ]
+}
+
+@test "dedupe_by_value keeps the first row per server" {
+  output="$(printf 'eno1\t8.8.8.8\nwt0\t8.8.8.8\nwt0\t9.9.9.9\n' | dedupe_by_value)"
+  [ "$output" = $'eno1\t8.8.8.8\nwt0\t9.9.9.9' ]
+}
