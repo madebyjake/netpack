@@ -145,6 +145,30 @@ dedupe_by_value() {
   awk -F'\t' '!seen[$2]++'
 }
 
+# --- shared verdict helpers ---------------------------------------------------
+
+# classify_loss_set THRESHOLD PCT... -> none | clean | mixed | all
+#
+# How a set of per-target loss percentages should read as one verdict. Values
+# that are not numeric ("-", empty) are unmeasured and ignored rather than
+# counted as clean. The distinction that matters is "every measured target is
+# lossy" (a shared path fault) versus "only some are" (destination- or
+# protocol-specific handling), which is why callers map `all` and `mixed` to
+# different exit codes.
+classify_loss_set() {
+  local threshold=$1
+  shift
+  printf '%s\n' "$@" | awk -v t="$threshold" '
+    /^[0-9]+([.][0-9]+)?$/ { n++; if ($1 + 0 > t + 0) over++ }
+    END {
+      if (n == 0) print "none"
+      else if (over == 0) print "clean"
+      else if (over == n) print "all"
+      else print "mixed"
+    }
+  '
+}
+
 # --- segscan ------------------------------------------------------------------
 
 # IPs claimed by two or more distinct MACs in an arp-scan report, sorted.

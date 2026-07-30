@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 COUNT=100
 NAME="cloudflare.com"
@@ -116,25 +118,23 @@ for srv in "${SERVERS[@]}"; do
     "$srv" "$COUNT" "$ok" "$fail" "$(color_loss_pct "$loss")" "$stats"
 done
 
-lossy=0
-clean=0
-for p in "${LOSS_PCTS[@]}"; do
-  awk -v p="$p" 'BEGIN { exit !(p > 1.0) }' && lossy=$((lossy + 1)) || clean=$((clean + 1))
-done
-
-if (( lossy == 0 )); then
-  verdict "UDP replies received from all tested resolvers." \
-    "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
-  finished
-  exit 0
-elif (( clean == 0 )); then
-  verdict "UDP loss observed to all tested resolvers." \
-    "Investigate path policing, NAT state, or venue/ISP UDP handling."
-  finished
-  exit 2
-else
-  verdict "results diverge across resolvers." \
-    "Likely destination-specific handling rather than a shared path fault."
-  finished
-  exit 3
-fi
+case "$(classify_loss_set 1 "${LOSS_PCTS[@]}")" in
+  all)
+    verdict "UDP loss observed to all tested resolvers." \
+      "Investigate path policing, NAT state, or venue/ISP UDP handling."
+    finished
+    exit 2
+    ;;
+  mixed)
+    verdict "results diverge across resolvers." \
+      "Likely destination-specific handling rather than a shared path fault."
+    finished
+    exit 3
+    ;;
+  *)
+    verdict "UDP replies received from all tested resolvers." \
+      "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
+    finished
+    exit 0
+    ;;
+esac

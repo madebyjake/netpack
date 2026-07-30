@@ -109,6 +109,37 @@ setup() {
   [ "$output" = $'eno1\t8.8.8.8\nwt0\t9.9.9.9' ]
 }
 
+# --- shared loss classification ----------------------------------------------
+
+@test "classify_loss_set separates a shared fault from a selective one" {
+  # Every measured target lossy is a path fault; only some is destination- or
+  # protocol-specific. Callers map these to different exit codes.
+  run classify_loss_set 1 5.0 7.2 9.9
+  [ "$output" = "all" ]
+  run classify_loss_set 1 0.0 7.2
+  [ "$output" = "mixed" ]
+  run classify_loss_set 1 0.0 0.5 1.0
+  [ "$output" = "clean" ]
+}
+
+@test "classify_loss_set ignores unmeasured targets rather than counting them clean" {
+  # A mode that produced no report must not dilute a verdict: "-" is missing
+  # evidence, not evidence of health.
+  run classify_loss_set 1 - 5.0
+  [ "$output" = "all" ]
+  run classify_loss_set 1 - -
+  [ "$output" = "none" ]
+  run classify_loss_set 1
+  [ "$output" = "none" ]
+}
+
+@test "classify_loss_set treats the threshold itself as clean" {
+  run classify_loss_set 1 1.0
+  [ "$output" = "clean" ]
+  run classify_loss_set 1 1.1
+  [ "$output" = "all" ]
+}
+
 # --- segscan -----------------------------------------------------------------
 
 @test "arp_duplicates flags only IPs claimed by two or more MACs" {
