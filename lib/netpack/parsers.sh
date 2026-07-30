@@ -1,6 +1,12 @@
-# Pure parsers shared by bash tools (and bats fixtures).
+# Pure parsing and verdict logic for the bash tools (and the bats suite).
 # shellcheck shell=bash
-# Sourced by bin/splitloss, bin/path3, and tests.
+#
+# Every bash tool that decides something sources this file: splitloss, path3,
+# dnscheck, segscan, wifiscan, udp-loss, webcheck, mtucheck. The rule from
+# CONTRIBUTING applies here — anything that parses or classifies lives in this
+# file as a pure function so it can be tested against captured output, and
+# bin/ is left doing I/O. Functions are grouped by the tool that drove them
+# out, but several are shared (classify_loss_set serves path3 and udp-loss).
 
 # Parse packet-loss percent from a ping summary file (supports fractional %).
 loss_pct() {
@@ -138,6 +144,139 @@ is_stub_addr() {
 dedupe_by_value() {
   awk -F'\t' '!seen[$2]++'
 }
+
+# --- segscan ------------------------------------------------------------------
+
+# IPs claimed by two or more distinct MACs in an arp-scan report, sorted.
+# arp-scan's retries print the same IP+MAC repeatedly and annotate them with
+# "(DUP: n)"; that is one host answering twice, not an address conflict, so
+# pairs are deduplicated before an IP is counted as contested.
+arp_duplicates() {
+  awk '
+    /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]/ {
+      ip = $1; mac = tolower($2)
+      if (!(ip SUBSEP mac in seen)) {
+        seen[ip SUBSEP mac] = 1
+        macs[ip]++
+      }
+    }
+    END { for (ip in macs) if (macs[ip] >= 2) print ip }
+  ' "$1" | sort
+}
+
+# --- wifiscan -----------------------------------------------------------------
+
+# One "bssid<TAB>channel<TAB>signal<TAB>encryption<TAB>ssid" row per BSS in an
+# `iw dev IFACE scan` report. Channel is derived from the frequency; 6 GHz
+# reports as the band name "6G" because its channel numbers collide with the
+# 2.4/5 GHz numbering, which would corrupt the per-channel histograms.
+parse_iw_scan() {
+  awk '
+    function chan(f) {
+      if (f == 2484) return 14
+      if (f >= 2412 && f <= 2472) return (f - 2407) / 5
+      if (f >= 5925) return "6G"
+      if (f >= 5000) return (f - 5000) / 5
+      return "?"
+    }
+    function flush() {
+      if (bss != "") {
+        enc = rsn ? "wpa2/3" : (wpa ? "wpa" : (priv ? "wep" : "open"))
+        printf "%s\t%s\t%s\t%s\t%s\n", bss, chan(freq), sig, enc, ssid
+      }
+    }
+    /^BSS / {
+      flush()
+      bss = $2; sub(/\(on.*/, "", bss)
+      ssid = "<hidden>"; sig = "?"; freq = "?"; rsn = 0; wpa = 0; priv = 0
+    }
+    /^[[:space:]]*signal:/ { sig = $2 }
+    /^[[:space:]]*freq:/ { freq = $2 }
+    /^[[:space:]]*capability:.*Privacy/ { priv = 1 }
+    /^[[:space:]]*RSN:/ { rsn = 1 }
+    /^[[:space:]]*WPA:/ { wpa = 1 }
+    /^[[:space:]]*SSID:/ {
+      s = $0; sub(/^[[:space:]]*SSID:[[:space:]]*/, "", s)
+      if (s != "") ssid = s
+    }
+    END { flush() }
+  ' "$1"
+}
+
+# "channel count" for the busiest channel in [LO, HI] of a parse_iw_scan table.
+# Prints nothing when no AP falls in the band, so callers can tell "no APs on
+# this band" from "APs, none crowded".
+wifi_busiest_channel() {
+  local file=$1 lo=$2 hi=$3
+  awk -F'\t' -v lo="$lo" -v hi="$hi" '
+    $2 ~ /^[0-9]+$/ && $2 >= lo && $2 <= hi { c[$2]++ }
+    END {
+      bc = ""; bn = 0
+      for (ch in c) if (c[ch] > bn || (c[ch] == bn && ch + 0 < bc + 0)) { bn = c[ch]; bc = ch }
+      if (bn > 0) print bc, bn
+    }
+  ' "$file"
+}
+
+# "  ch N count" lines for every occupied channel in [LO, HI], ascending.
+wifi_channel_hist() {
+  local file=$1 lo=$2 hi=$3
+  awk -F'\t' -v lo="$lo" -v hi="$hi" '
+    $2 ~ /^[0-9]+$/ && $2 >= lo && $2 <= hi { c[$2]++ }
+    END { for (ch = lo; ch <= hi; ch++) if (c[ch]) printf "  ch %-3s %d\n", ch, c[ch] }
+  ' "$file"
+}
+
+# --- webcheck -----------------------------------------------------------------
+
+# classify_http_probe STATUS WANT_STATUS BODY WANT_BODY [REDIRECT]
+#   -> ok | redirect | status | body
+#
+# A portal is identified by the response not matching its published answer. A
+# wrong status with a redirect target names the portal; the right status with
+# the wrong body is interception that kept the status intact.
+classify_http_probe() {
+  local status=$1 want_status=$2 body=$3 want_body=$4 redirect=${5:-}
+  if [[ "$status" == "$want_status" && "$body" == "$want_body" ]]; then
+    printf 'ok\n'
+  elif [[ "$status" != "$want_status" && -n "$redirect" ]]; then
+    printf 'redirect\n'
+  elif [[ "$status" != "$want_status" ]]; then
+    printf 'status\n'
+  else
+    printf 'body\n'
+  fi
+}
+
+# --- mtucheck -----------------------------------------------------------------
+
+# Total IPv4 size for a DF payload that got through (payload + 20 IP + 8 ICMP).
+# 0 stays 0: no payload succeeded, so there is no size to report.
+mtu_total() {
+  local payload=${1:-0}
+  if [[ ! "$payload" =~ ^[0-9]+$ ]] || (( payload == 0 )); then
+    printf '0\n'
+  else
+    printf '%s\n' $((payload + 28))
+  fi
+}
+
+# classify_mtu THRESHOLD GW_TOTAL WAN_TOTAL -> ok | reduced | blocked
+# "blocked" is both paths failing outright, which is ICMP filtering rather than
+# an MTU finding, so callers report it as an error instead of a small MTU.
+classify_mtu() {
+  local threshold=$1 gw=$2 wan=$3
+  if (( gw == 0 && wan == 0 )); then
+    printf 'blocked\n'
+  elif (( gw == 0 || wan == 0 || gw < threshold || wan < threshold )); then
+    printf 'reduced\n'
+  else
+    printf 'ok\n'
+  fi
+}
+
+# --- path3 --------------------------------------------------------------------
+
 # Extract final-hop host, loss, and avg from an mtr report file.
 summarize_final() {
   local file=$1

@@ -1,0 +1,35 @@
+BSS aa:bb:cc:00:00:01(on wlan0)
+	TSF: 123456789 usec
+	freq: 2412
+	capability: ESS Privacy ShortSlotTime (0x0411)
+	signal: -42.00 dBm
+	SSID: VenueWiFi
+	RSN:	 * Version: 1
+BSS aa:bb:cc:00:00:02(on wlan0)
+	freq: 2437
+	capability: ESS (0x0401)
+	signal: -67.00 dBm
+	SSID: GuestOpen
+BSS aa:bb:cc:00:00:03(on wlan0)
+	freq: 2437
+	capability: ESS Privacy (0x0411)
+	signal: -71.00 dBm
+	SSID: OldWEP
+BSS aa:bb:cc:00:00:04(on wlan0)
+	freq: 5180
+	capability: ESS Privacy (0x0411)
+	signal: -55.00 dBm
+	SSID: VenueWiFi-5G
+	RSN:	 * Version: 1
+BSS aa:bb:cc:00:00:05(on wlan0)
+	freq: 2437
+	capability: ESS Privacy (0x0411)
+	signal: -80.00 dBm
+	SSID:
+	WPA:	 * Version: 1
+BSS aa:bb:cc:00:00:06(on wlan0)
+	freq: 5975
+	capability: ESS Privacy (0x0411)
+	signal: -60.00 dBm
+	SSID: SixGig
+	RSN:	 * Version: 1

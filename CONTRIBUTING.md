@@ -13,9 +13,14 @@ tests/          pytest for Python, bats for bash
 
 The split is deliberate: **anything that parses or decides lives in `lib/` as a
 pure function, and `bin/` does the I/O.** That is what makes the logic testable
-without a network, a switch, or root — `link.py` parses `ethtool` text that
-`bin/linkstat` captured, `parsers.sh` parses ping output, `mcast.py` decodes
-probe datagrams. New logic should follow the same shape.
+without a network, a switch, or root — `link.py` parses the `ethtool` text that
+`bin/linkstat` and `bin/cabletest` captured, `mcast.py` decodes probe datagrams,
+and `parsers.sh` holds the same for the bash tools: ping and mtr summaries,
+resolver enumeration, ARP duplicate detection, `iw scan` records, and the
+classifiers behind the HTTP, MTU and loss verdicts.
+
+New logic follows the same shape. A verdict computed inline in `bin/` cannot be
+tested, and that is exactly where the resolver bug in `dnscheck` lived.
 
 ## Development setup
 
