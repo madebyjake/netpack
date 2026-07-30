@@ -14,7 +14,7 @@ fi
 # tool list and the menu numbering, so numbers stay stable as long as new tools
 # are appended within their section.
 SECTIONS=(
-  "Segment & link:dhcpprobe linkstat segscan wifiscan discover"
+  "Segment & link:dhcpprobe linkstat cabletest segscan wifiscan discover"
   "Reachability & path:splitloss dnscheck webcheck portcheck mtucheck path3 udp-loss"
   "Streams & capture:mcastcheck ringcap"
   "Throughput — planned tests only:testsrv testcli"
@@ -110,7 +110,7 @@ print_legend() {
   printf '  %ssudo%s   needs root (auto-elevates)\n' "$C_ROOT" "$C_OFF"
   printf '  %ssudo?%s  better with root (asks at launch)\n' "$C_DIM" "$C_OFF"
   printf '  %sprobe%s  sends light diagnostic traffic\n' "$C_AMBER" "$C_OFF"
-  printf '  %sLOUD%s   heavy traffic or active probing — authorized, planned use only\n' \
+  printf '  %sLOUD%s   heavy traffic, probing, or link disruption — planned use only\n' \
     "$C_WARN" "$C_OFF"
 }
 
@@ -395,6 +395,14 @@ prompt_args() {
   local -a ports=()
   PROMPT_ARGS=()
   case "$name" in
+    cabletest)
+      # The tool refuses without -y, so the menu has to ask for it rather than
+      # launching a run that can only fail. Default is no: this drops the link.
+      ask_choice "Drops the link on this interface while it measures — continue?" \
+        n y n || return 1
+      [[ "$REPLY_VALUE" == "y" ]] || return 1
+      PROMPT_ARGS+=(-y)
+      ;;
     portcheck)
       ask_value "HOST or IP (e.g. 192.168.1.50)" || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")

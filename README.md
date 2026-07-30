@@ -112,14 +112,16 @@ Saturating the venue uplink disrupts everything on it — planned tests only.
 
 Root and traffic columns use the same tags as `npk list` and the menu:
 `sudo` needs root (the menu auto-elevates), `sudo?` is better with root (the menu
-asks), `probe` sends light diagnostic traffic, `LOUD` is heavy traffic or active
-probing — authorized, planned use only. A blank cell is passive or read-only.
+asks), `probe` sends light diagnostic traffic, `LOUD` is heavy traffic, active
+probing, or link disruption — authorized, planned use only. A blank cell is
+passive or read-only.
 
 | Tool | Purpose | Root | Traffic |
 |------|---------|------|---------|
 | `doctor` | Check dependencies and readiness | | |
 | `dhcpprobe` | List DHCP servers on the segment (DISCOVER only) | `sudo` | `probe` |
 | `linkstat` | Sample link counters; physical vs congestion | | |
+| `cabletest` | TDR cable test: per-pair faults and distance | `sudo` | `LOUD` |
 | `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | `sudo?` | `LOUD` |
 | `wifiscan` | Nearby Wi-Fi APs, signal, channel congestion | `sudo` | `probe` |
 | `discover` | SSDP/mDNS service discovery on the segment | | `probe` |
@@ -161,6 +163,8 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 - `discover` requests unicast mDNS replies (QU); responders that only multicast are not captured, so it is best-effort, not an exhaustive inventory.
 - `discover` labels known mDNS service types (Dante, NDI, AirPlay, printers, …) and lists real-time AV advertisers separately. Unrecognized types print verbatim. Vendor service names change between product generations, so treat a label as convenience, not authority.
 - `linkstat` reports Energy Efficient Ethernet and flow-control state on wired links. EEE lets the PHY enter low-power idle between frames, adding wake latency and jitter; it is a known cause of clock instability for Dante/AES67 and PTP, and of jitter for VoIP. Disable it on ports carrying those streams. These are settings rather than counters, so they never affect the exit code.
+- `cabletest` runs ethtool's TDR cable test, reporting each pair as OK or faulted with the approximate distance to the break — the direct answer to "is the cable bad, and where", for when `linkstat` shows physical-layer growth or carrier flaps. It carries `LOUD` for disruption rather than traffic: the PHY drops the link to measure, so the port goes down for the duration. It requires root and `-y`, and the menu asks before running it.
+- `cabletest` depends on the NIC driver exposing TDR, and most desktop and server NICs do not — `e1000e`, `igb` and `r8169` all reject the request, so it will not work against a typical workstation's onboard port. Support is common on embedded and switch PHYs. A driver that cannot run the test quotes ethtool's own message, names the driver, and exits 1 rather than reporting a pass; a rejected request never disturbs the link, and the report says so.
 - `webcheck` fetches public connectivity endpoints over plain HTTP by design (portals intercept HTTP) and never follows redirects; the redirect target is the evidence. Its final HTTPS probe validates the chain against the system trust store (untrusted chain = TLS interception) and its clock line compares the local clock with the HTTP Date header.
 - `dhcpprobe` does not complete DORA by default (no REQUEST/ACK) and does not bind a lease. `--full` completes DORA against the first offer and immediately RELEASEs; it briefly binds an address and appears in server lease logs.
 - For tagged DHCP, pass `dhcpprobe -V <vid>` to create a temporary VLAN sub-interface (removed on exit; an existing sub-interface is reused and left in place), or run on the sub-interface directly (for example `eth0.100`).
@@ -179,6 +183,7 @@ npk doctor
 npk --version
 netpack dhcpprobe -i eth0 --dump /tmp/dhcp.json
 netpack linkstat -t 30 --dump /tmp/linkstat.json
+sudo netpack cabletest -y -i eth0
 sudo netpack segscan -i eth0
 sudo netpack wifiscan
 netpack discover -t 3 --dump /tmp/discover.json

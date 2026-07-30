@@ -12,7 +12,8 @@
 #            sudo     needs root to do anything useful; the menu elevates
 #   traffic  (blank)  passive or read-only
 #            probe    light diagnostic traffic
-#            LOUD     heavy traffic or active probing — needs an impact line
+#            LOUD     heavy traffic, active probing, or link disruption —
+#                     needs an impact line
 #   impact   consequence shown at the point of run; required for LOUD, else blank
 #
 # Columns are pipe-separated: name | root | traffic | description | impact
@@ -20,6 +21,7 @@ TOOL_ROWS=(
   "doctor     |       |       | Dependency and readiness checks               |"
   "dhcpprobe  | sudo  | probe | DHCP servers on the local segment             |"
   "linkstat   |       |       | Link counters; physical vs congestion signals |"
+  "cabletest  | sudo  | LOUD  | TDR cable test: per-pair faults and distance  | drops the link on the interface while it measures; planned tests only"
   "segscan    | sudo? | LOUD  | Segment inventory (LLDP, gateway, ARP)        | sweeps every address on the subnet — can read as recon; planned tests only"
   "wifiscan   | sudo  | probe | Wi-Fi AP survey and channel usage             |"
   "discover   |       | probe | SSDP/mDNS service discovery                   |"

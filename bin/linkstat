@@ -68,6 +68,9 @@ and flow control. EEE is called out because low-power idle adds wake latency
 and jitter, which destabilizes real-time media clocking (Dante/AES67, PTP) and
 VoIP. These are settings, not counters, so they never change the exit code.
 
+When the counters point at the physical layer, `cabletest` measures the cable
+itself.
+
 Usage:
   linkstat [-i IFACE] [-t SECONDS] [--dump FILE]
 
