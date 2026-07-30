@@ -38,11 +38,36 @@ netpack | npk list            List tools
 netpack | npk help            Show this help (includes tool list)
 netpack | npk --version       Print version
 netpack | npk <tool> [args]   Run a tool
+netpack | npk -o DIR ...      Capture evidence into DIR
 ```
 
 Tools are also invocable directly (`dhcpprobe`, `linkstat`, …). Use `-h` / `--help` on any tool.
 
 When you pick a root-requiring tool from the menu without being root, the menu invokes sudo for you (tools where root is optional ask first). Direct invocation never adds sudo.
+
+### Evidence capture
+
+`-o DIR` records every run started through the launcher — one run or a whole
+session:
+
+```bash
+npk -o ~/evidence/site-visit               # menu; everything run is captured
+npk -o ~/evidence/site-visit dnscheck      # capture a single run
+```
+
+Each run writes `DIR/<tool>-<timestamp>.log` (the terminal report and its
+stderr, in plain text) and appends a row to `DIR/manifest.tsv` recording the
+command as you would retype it, its start and end times, and its exit code. The
+directory is created mode 700. This is how the tools without their own `--dump`
+still leave evidence behind; tools that write JSON still do so as well.
+
+The menu shows `rec <dir>` in its status line while capture is active.
+
+Capture covers runs started through the launcher — `npk <tool>`, the menu, and
+playbooks. A tool invoked directly by name (`dhcpprobe -i eth0`, with `bin/` on
+PATH) bypasses it and is not recorded. If you are collecting evidence, drive the
+session through `npk`; `make install` links only the launcher names for that
+reason.
 
 ## Field playbook
 

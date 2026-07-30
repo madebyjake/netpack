@@ -84,3 +84,37 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" -eq "${#TOOLS[@]}" ]
 }
+
+@test "capture writes a log, a manifest row, and preserves the exit code" {
+  local dir="${BATS_TEST_TMPDIR}/cap"
+  # portcheck against a closed local port exits 2: a non-zero code that is a
+  # diagnostic result, so it must survive the tee pipeline unchanged.
+  run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 22
+  [ "$status" -eq 2 ]
+  [ -f "${dir}/manifest.tsv" ]
+
+  # One log, named for the tool.
+  local logs=("${dir}"/portcheck-*.log)
+  [ "${#logs[@]}" -eq 1 ]
+  grep -q "ASSESSMENT:" "${logs[0]}"
+
+  # Manifest row records the retypable command and the exit code.
+  local row
+  row="$(grep -v '^#' "${dir}/manifest.tsv")"
+  [ "$(printf '%s\n' "$row" | wc -l)" -eq 1 ]
+  [ "$(printf '%s' "$row" | cut -f3)" = "2" ]
+  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 22" ]
+}
+
+@test "capture appends across runs and keeps the directory owner-only" {
+  local dir="${BATS_TEST_TMPDIR}/cap2"
+  env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 22 >/dev/null || true
+  env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 23 >/dev/null || true
+  [ "$(grep -cv '^#' "${dir}/manifest.tsv")" -eq 2 ]
+  [ "$(stat -c '%a' "$dir")" = "700" ]
+}
+
+@test "-o without a directory is a usage error" {
+  run "${REPO}/bin/netpack" -o
+  [ "$status" -eq 1 ]
+}
