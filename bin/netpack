@@ -38,6 +38,13 @@ if ! source "${BIN_DIR}/../lib/netpack/tools.sh"; then
   exit 1
 fi
 
+# Guided playbooks. Sourced after tools.sh, whose trim() it reuses.
+# shellcheck source=../lib/netpack/playbooks.sh
+if ! source "${BIN_DIR}/../lib/netpack/playbooks.sh"; then
+  echo "error: cannot load ${BIN_DIR}/../lib/netpack/playbooks.sh" >&2
+  exit 1
+fi
+
 # Snapshot any inherited LINES up front: bash's checkwinsize can rewrite it
 # between commands, which would make the menu layout flicker between draws.
 NP_LINES=${LINES:-}
@@ -76,6 +83,8 @@ Usage:
   ${me} help            Show this help
   ${me} --version       Print version
   ${me} <tool> [args]   Run a tool (arguments pass through)
+  ${me} playbooks       List guided playbooks
+  ${me} playbook <id>   Run a guided playbook
   ${me} -o DIR ...      Capture evidence into DIR (menu or single tool)
 
 Also available as: netpack | npk
@@ -251,6 +260,7 @@ print_keys() {
   printf '    %-20s %s\n' "N <args>" "run with arguments, skipping prompts (e.g. 2 -t 30)"
   printf '    %-20s %s\n' "?N | ?<tool>" "show that tool's --help (e.g. ?11)"
   printf '    %-20s %s\n' "d" "doctor — dependency and readiness checks"
+  printf '    %-20s %s\n' "p | p <name>" "guided playbooks for a symptom (e.g. p wan)"
   printf '    %-20s %s\n' "r" "repeat the previous run"
   printf '    %-20s %s\n' "q | Ctrl-D" "quit"
   echo
@@ -310,6 +320,7 @@ render_menu() {
   fi
   echo
   tool_row d doctor
+  plain_row p playbook "Guided sequences for a symptom"
   if (( ${#LAST_RUN[@]} )); then
     plain_row r repeat "${LAST_RUN[*]}"
   fi
@@ -564,12 +575,17 @@ show_tool_help() {
 
 # Run a tool from the menu: decide sudo, collect missing arguments, echo the
 # equivalent command line, then return to the menu with the exit code explained.
+# Set when the operator backed out of a run at one of its prompts, so the
+# playbook runner can stop the sequence instead of marching to the next step.
+MENU_CANCELLED=0
+
 menu_run() {
   local name=$1
   shift
   local -a args=("$@")
   local -a prefix=()
   local path rc=0 ans
+  MENU_CANCELLED=0
   path="$(tool_path "$name")" || return 0
   echo
 
@@ -581,18 +597,22 @@ menu_run() {
       printf '  %s uses root for full results; run with sudo? [Y/n]: ' "$name"
       if ! read -r ans; then
         echo
+        MENU_CANCELLED=1
         return 0
       fi
       case "$ans" in
         n|N|no|NO) ;;
-        q|Q) return 0 ;;
+        q|Q) MENU_CANCELLED=1; return 0 ;;
         *) prefix=(sudo) ;;
       esac
     fi
   fi
 
   if (( ${#args[@]} == 0 )); then
-    prompt_args "$name" || return 0
+    if ! prompt_args "$name"; then
+      MENU_CANCELLED=1
+      return 0
+    fi
     args=("${PROMPT_ARGS[@]+"${PROMPT_ARGS[@]}"}")
   fi
 
@@ -632,10 +652,99 @@ menu_run() {
   pause
 }
 
+# What the next Enter does. The playbook runner overrides this so the prompt
+# after a step offers the next step rather than the menu.
+PAUSE_HINT="Enter for the menu, q to quit"
+
+# --- playbooks ---------------------------------------------------------------
+
+# Numbered list of playbooks, with each one's step count.
+list_playbooks() {
+  local id i=1 steps
+  printf '\n  %sGuided playbooks%s\n' "$C_AMBER" "$C_OFF"
+  printf '  %srun these while the symptom is present%s\n\n' "$C_DIM" "$C_OFF"
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    steps="$(playbook_steps "$id" | wc -l)"
+    printf '  %2s) %s%-10s%s  %s%s (%s steps)%s\n' \
+      "$i" "$C_BOLD" "$id" "$C_OFF" "" "$(playbook_title "$id")" "$steps" "$C_OFF"
+    i=$((i + 1))
+  done
+  printf '\n  %sThroughput and bufferbloat need a second machine running testsrv;\n' "$C_DIM"
+  printf '  those procedures stay in the README.%s\n' "$C_OFF"
+}
+
+# Resolve a number or id to a playbook id; empty on miss.
+resolve_playbook() {
+  local sel=$1 id
+  if [[ "$sel" =~ ^[0-9]+$ ]]; then
+    sel=$((10#$sel))
+    if (( sel >= 1 && sel <= ${#PLAYBOOK_IDS[@]} )); then
+      printf '%s\n' "${PLAYBOOK_IDS[$((sel - 1))]}"
+    fi
+    return 0
+  fi
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    if [[ "$sel" == "$id" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done
+}
+
+# Walk a playbook: state why each step is being run, run it through menu_run
+# (which keeps privilege, prompting, impact notices and capture identical to a
+# hand-picked run), and stop for the operator to read the result between steps.
+run_playbook() {
+  local id=$1
+  local -a steps=() fields=()
+  local line cmd why total i=1 saved_hint=$PAUSE_HINT
+  mapfile -t steps < <(playbook_steps "$id")
+  total=${#steps[@]}
+  if (( total == 0 )); then
+    printf '\n  %sno such playbook: %s%s\n' "$C_WARN" "$id" "$C_OFF"
+    return 0
+  fi
+
+  echo
+  printf '  %s%s%s\n' "$C_AMBER" "$(playbook_title "$id")" "$C_OFF"
+  printf '  %s%d steps — q at any prompt leaves the playbook%s\n' \
+    "$C_DIM" "$total" "$C_OFF"
+
+  for line in "${steps[@]}"; do
+    cmd=${line%%$'\t'*}
+    why=${line#*$'\t'}
+    echo
+    printf '  %s── step %d of %d ──%s\n' "$C_AMBER" "$i" "$total" "$C_OFF"
+    printf '  %s%s%s\n' "$C_BOLD" "$cmd" "$C_OFF"
+    printf '  %s%s%s\n' "$C_DIM" "$why" "$C_OFF"
+    if (( i < total )); then
+      PAUSE_HINT="Enter for step $((i + 1)) of ${total}, q to quit"
+    else
+      PAUSE_HINT="Enter to finish the playbook, q to quit"
+    fi
+    read -r -a fields <<<"$cmd"
+    menu_run "${fields[0]}" "${fields[@]:1}"
+    if (( MENU_CANCELLED )); then
+      PAUSE_HINT=$saved_hint
+      printf '\n  %splaybook stopped at step %d of %d%s\n' \
+        "$C_AMBER" "$i" "$total" "$C_OFF"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+
+  PAUSE_HINT=$saved_hint
+  echo
+  printf '  %splaybook complete: %s%s\n' "$C_OK" "$(playbook_title "$id")" "$C_OFF"
+  if [[ -n "$CAPTURE_DIR" ]]; then
+    printf '  %sevidence in %s%s\n' "$C_DIM" "$CAPTURE_DIR" "$C_OFF"
+  fi
+}
+
 pause() {
   local ans
   echo
-  printf '  %sEnter for the menu, q to quit: %s' "$C_AMBER" "$C_OFF"
+  printf '  %s%s: %s' "$C_AMBER" "$PAUSE_HINT" "$C_OFF"
   if ! read -r ans; then
     echo
     quit
@@ -692,6 +801,28 @@ menu() {
           show_tool_help "$name"
         fi
         pause
+        continue
+        ;;
+      p|P|playbook)
+        if (( ${#fields[@]} )); then
+          name="$(resolve_playbook "${fields[0]}")"
+        else
+          list_playbooks
+          printf '\n%s  Playbook (number or name, Enter to go back): %s' "$C_AMBER" "$C_OFF"
+          if ! read -r sel; then
+            echo
+            quit
+          fi
+          [[ -n "$sel" ]] || continue
+          name="$(resolve_playbook "$sel")"
+        fi
+        if [[ -z "$name" ]]; then
+          printf '\n  %sno such playbook: %s%s\n' "$C_WARN" "${fields[0]:-$sel}" "$C_OFF"
+          pause
+        else
+          run_playbook "$name"
+          pause
+        fi
         continue
         ;;
       r|R)
@@ -767,6 +898,30 @@ main() {
       ;;
     list|ls)
       list_tools
+      ;;
+    playbooks)
+      list_playbooks
+      ;;
+    playbook)
+      shift
+      if [[ $# -eq 0 ]]; then
+        list_playbooks
+        exit 0
+      fi
+      local pb
+      pb="$(resolve_playbook "$1")"
+      if [[ -z "$pb" ]]; then
+        echo "error: unknown playbook: ${1}" >&2
+        echo "hint: run 'netpack playbooks'" >&2
+        exit 1
+      fi
+      shift
+      if [[ $# -gt 0 ]]; then
+        echo "error: unexpected argument: ${1}" >&2
+        exit 1
+      fi
+      build_menu_index
+      run_playbook "$pb"
       ;;
     *)
       local name=$1

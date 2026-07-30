@@ -11,6 +11,10 @@ lib/netpack/    Python package, and the bash pieces shared beyond one tool
 tests/          pytest for Python, bats for bash
 ```
 
+Two data tables in `lib/netpack/` drive the launcher and are the only place
+their facts live: `tools.sh` (root/traffic tags, descriptions, impact notes) and
+`playbooks.sh` (guided sequences and the reason for each step).
+
 The split is deliberate: **anything that parses or decides lives in `lib/` as a
 pure function, and `bin/` does the I/O.** That is what makes the logic testable
 without a network, a switch, or root — `link.py` parses the `ethtool` text that
@@ -80,6 +84,23 @@ Steps 2–5 are enforced: `tests/test_launcher.bats` and `tests/test_docs.py` fa
 if a tool is missing metadata, has an unknown tag, is absent from `doctor`, or
 disagrees with the README. That is deliberate — those facts were previously
 restated in five places and silently drifted apart.
+
+## Adding a playbook
+
+Playbooks are the ordered sequences the menu's `p` key and `netpack playbook`
+walk. Add one row to `PLAYBOOK_ROWS` in `lib/netpack/playbooks.sh`, its steps to
+`PLAYBOOK_STEPS`, and the matching `npk playbook <id>` pointer to the README
+sequence it corresponds to.
+
+A step's "why" is required, and it is the point: it says what the operator
+should conclude from the result they are about to see. Steps run through the
+same path as a hand-picked run, so privilege, prompting, impact notices and
+capture all behave identically — leave arguments off a step when the launcher
+already knows how to prompt for them (`portcheck`, `ringcap`, `mcastcheck`).
+
+Only single-machine sequences belong here; anything needing a second host stays
+prose in the README. `tests/test_launcher.bats` fails on a step naming an
+unknown tool, a playbook with fewer than two steps, or a step without a reason.
 
 ## Conventions
 

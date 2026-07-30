@@ -118,3 +118,57 @@ setup() {
   run "${REPO}/bin/netpack" -o
   [ "$status" -eq 1 ]
 }
+
+@test "every playbook step names a real tool" {
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    while IFS=$'\t' read -r cmd why; do
+      [ -n "$cmd" ] || { echo "empty step in playbook: $id"; return 1; }
+      [ -n "$why" ] || { echo "step without a reason: $id / $cmd"; return 1; }
+      # The step may carry arguments; the first field is the tool.
+      local tool="${cmd%% *}" found=0 t
+      for t in "${TOOLS[@]}"; do
+        [ "$t" = "$tool" ] && found=1 && break
+      done
+      [ "$found" -eq 1 ] || { echo "playbook $id references unknown tool: $tool"; return 1; }
+    done < <(playbook_steps "$id")
+  done
+}
+
+@test "every playbook has a title and at least two steps" {
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    [ -n "$(playbook_title "$id")" ] || { echo "no title: $id"; return 1; }
+    local n
+    n="$(playbook_steps "$id" | wc -l)"
+    # A one-step playbook is just a tool; it should not be listed as a sequence.
+    [ "$n" -ge 2 ] || { echo "playbook $id has $n step(s)"; return 1; }
+  done
+}
+
+@test "no orphaned rows in the playbook step table" {
+  local row id found x
+  for row in "${PLAYBOOK_STEPS[@]}"; do
+    IFS='|' read -r id _ <<<"$row"
+    id="$(trim "$id")"
+    found=0
+    for x in "${PLAYBOOK_IDS[@]}"; do
+      [ "$x" = "$id" ] && found=1 && break
+    done
+    [ "$found" -eq 1 ] || { echo "step for undeclared playbook: $id"; return 1; }
+  done
+}
+
+@test "resolve_playbook accepts a number or a name" {
+  run resolve_playbook 1
+  [ "$output" = "${PLAYBOOK_IDS[0]}" ]
+  run resolve_playbook "${PLAYBOOK_IDS[0]}"
+  [ "$output" = "${PLAYBOOK_IDS[0]}" ]
+  run resolve_playbook "$(( ${#PLAYBOOK_IDS[@]} + 1 ))"
+  [ "$output" = "" ]
+  run resolve_playbook nosuchplaybook
+  [ "$output" = "" ]
+}
+
+@test "an unknown playbook is a usage error" {
+  run "${REPO}/bin/netpack" playbook nosuchplaybook
+  [ "$status" -eq 1 ]
+}

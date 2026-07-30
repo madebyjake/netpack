@@ -38,6 +38,8 @@ netpack | npk list            List tools
 netpack | npk help            Show this help (includes tool list)
 netpack | npk --version       Print version
 netpack | npk <tool> [args]   Run a tool
+netpack | npk playbooks       List guided playbooks
+netpack | npk playbook <id>   Run a guided playbook
 netpack | npk -o DIR ...      Capture evidence into DIR
 ```
 
@@ -73,19 +75,36 @@ reason.
 
 Use these sequences while the symptom is present.
 
-**Wrong IP / cannot reach the local LAN**
+The single-machine sequences are runnable: `npk playbooks` lists them, `npk
+playbook <id>` walks one step by step (stating why each step is being run before
+it runs), and `p` does the same from the menu. Combine with `-o DIR` and the
+whole sequence lands in one evidence folder:
+
+```bash
+npk -o ~/evidence/site-visit playbook wan
+```
+
+The throughput and bufferbloat procedures need a second machine running
+`testsrv`, so they are documented here rather than being runnable lists.
+
+**Wrong IP / cannot reach the local LAN** — `npk playbook lan`
 
 1. `linkstat` — physical errors vs drops
 2. `sudo dhcpprobe` — one vs many DHCP servers (use VLAN iface if tagged)
 3. `sudo segscan` — LLDP neighbor, gateway, ARP, duplicate IPs
 4. `discover` — name the devices found (media servers, TVs, printers, AV gear)
 
-**Wi-Fi is unreliable or slow**
+**Errors or link flaps on a wired port** — `npk playbook cable`
+
+1. `linkstat -t 30` — confirm the fault is physical (errors/CRC/collisions growing, or carrier flapping)
+2. `sudo cabletest -y` — which pair failed, and how far along the run. Drops the link, so run it once the counters justify it
+
+**Wi-Fi is unreliable or slow** — `npk playbook wifi`
 
 1. `linkstat` — current association: signal, bitrate, carrier flaps
 2. `sudo wifiscan` — channel congestion and overlapping APs nearby
 
-**“Internet is down” but the link is up**
+**“Internet is down” but the link is up** — `npk playbook wan`
 
 1. `splitloss` — gateway vs WAN ICMP
 2. `dnscheck` — configured resolvers vs a public resolver
@@ -93,13 +112,13 @@ Use these sequences while the symptom is present.
 4. `mtucheck` — path MTU black holes
 5. `path3` / `udp-loss` — path and UDP delivery evidence
 
-**A specific service is unreachable (server, ingest, VPN)**
+**A specific service is unreachable (server, ingest, VPN)** — `npk playbook service`
 
 1. `portcheck <host> <ports>` — REFUSED (host up, service down) vs TIMEOUT (filtered)
 2. `dnscheck -n <service-name>` — resolution for that name
 3. `path3 <host>` — path evidence toward the service
 
-**Intermittent dropouts or bursts**
+**Intermittent dropouts or bursts** — `npk playbook dropouts`
 
 1. `sudo ringcap -d /path/to/dir` — start before or during the window; note wall-clock time
 2. `linkstat -t 30` — while the symptom is active
@@ -117,7 +136,7 @@ Use these sequences while the symptom is present.
 3. `splitloss -t 60` again while the load runs — rising avg/mdev with clean loss is buffering (bufferbloat); loss growth is saturation drops
 4. `testcli -u -b 5M <host>` — iperf3's UDP jitter line for a game-like stream under the same load
 
-**Dante/NDI multicast missing at a position**
+**Dante/NDI multicast missing at a position** — `npk playbook multicast`
 
 1. `discover` — is the device still advertising (mDNS)?
 2. `mcastcheck recv -g GROUP -p PORT` at the affected drop — is the flow arriving? (group/port from Dante Controller or the NDI sender)

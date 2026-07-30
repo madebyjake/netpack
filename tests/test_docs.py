@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 _ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)"\s*$')
 # "| `tool` | purpose | root | traffic |" in the README tools table.
 _MD_ROW = re.compile(r"^\|\s*`([a-z0-9-]+)`\s*\|([^|]*)\|([^|]*)\|([^|]*)\|")
+# "id | title" inside PLAYBOOK_ROWS.
+_PB_ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)"\s*$')
 
 
 def tool_metadata() -> dict[str, tuple[str, str]]:
@@ -74,3 +76,30 @@ def test_readme_documents_every_tool_in_an_example_or_playbook() -> None:
     readme = (ROOT / "README.md").read_text()
     for name in tool_metadata():
         assert re.search(rf"\b{re.escape(name)}\b", readme), f"{name} unmentioned"
+
+
+def playbook_ids() -> list[str]:
+    """Playbook ids from lib/netpack/playbooks.sh, in declaration order."""
+    out: list[str] = []
+    text = (ROOT / "lib" / "netpack" / "playbooks.sh").read_text()
+    # Stop at the steps table, whose rows have three fields, not two.
+    head = text.split("PLAYBOOK_STEPS", 1)[0]
+    for line in head.splitlines():
+        m = _PB_ROW.match(line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def test_playbook_table_is_parseable() -> None:
+    ids = playbook_ids()
+    assert len(ids) >= 4
+    assert "wan" in ids
+
+
+def test_readme_points_at_every_runnable_playbook() -> None:
+    # A playbook nobody can find is prose. Each runnable one names its command
+    # next to the sequence it walks.
+    readme = (ROOT / "README.md").read_text()
+    for pid in playbook_ids():
+        assert f"npk playbook {pid}" in readme, f"README does not offer: npk playbook {pid}"
