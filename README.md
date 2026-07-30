@@ -8,23 +8,27 @@ Network tools for on-site troubleshooting and evidence collection.
 # Clone
 git clone https://github.com/madebyjake/netpack.git ~/netpack
 
-# Persist PATH (bash; use ~/.zshrc on zsh)
-echo 'export PATH="$HOME/netpack/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-
 # Dependencies (Debian; Python >= 3.10 required)
 sudo apt update
 sudo apt install python3 python3-scapy iproute2 iputils-ping dnsutils \
   ethtool iw mtr-tiny tcpdump arp-scan lldpd iperf3 nftables iputils-tracepath \
   curl
 
-# Verify
-npk doctor
+# Put netpack and npk on PATH, then report readiness. Symlinks into
+# ~/.local/bin, so `git pull` updates them; PREFIX=/usr/local installs
+# system-wide.
+make -C ~/netpack install
 ```
 
-`bin/npk` is a symlink to `netpack`; both names work once `bin/` is on PATH.
+`make install` links only the two launcher names — every tool is reachable
+through them (`npk linkstat`), and the tools stay directly invocable if you put
+`~/netpack/bin` on PATH yourself instead:
 
-Update later with `git -C ~/netpack pull`.
+```bash
+echo 'export PATH="$HOME/netpack/bin:$PATH"' >> ~/.bashrc   # optional
+```
+
+Update later with `git -C ~/netpack pull`; `make uninstall` removes the links.
 
 Alternatively for Scapy only: `pip install -r ~/netpack/requirements.txt`
 
