@@ -52,10 +52,12 @@ validate_iface() {
   fi
 }
 
+# The route/addr helpers below parse via lib/netpack/parsers.sh, which every
+# bash tool sources alongside this file.
+
 default_iface() {
   local iface
-  iface="$(ip -o route get 1.1.1.1 2>/dev/null \
-    | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
+  iface="$(ip -o route get 1.1.1.1 2>/dev/null | parse_route_dev)"
   if [[ -n "${iface}" && -d "/sys/class/net/${iface}" ]]; then
     printf '%s\n' "$iface"
     return 0
@@ -83,8 +85,60 @@ resolve_iface() {
 }
 
 default_gateway() {
-  ip -o route show default 2>/dev/null \
-    | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}'
+  ip -o route show default 2>/dev/null | parse_default_via
+}
+
+# Gateway of IFACE's own default route (multi-homed boxes keep one per uplink
+# at different metrics); empty when the interface has none.
+iface_gateway() {
+  ip -o route show default dev "$1" 2>/dev/null | parse_default_via
+}
+
+# Interface the kernel would use to reach TARGET; empty when unroutable (or
+# when TARGET is an unresolvable name).
+route_iface() {
+  ip -o route get "$1" 2>/dev/null | parse_route_dev
+}
+
+# route_iface, but only for IPv4 literals — resolving a hostname here would
+# stall the very tools whose job is to diagnose broken DNS. Empty for names.
+via_for() {
+  if [[ "${1:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    route_iface "$1"
+  fi
+}
+
+# "iface<TAB>cidr" rows for every global IPv4 address on the system.
+global_ifaces() {
+  ip -o -4 addr show scope global 2>/dev/null | parse_global_ifaces
+}
+
+# First global IPv4 address (no prefix) on IFACE; empty when none.
+# Mirrors lib/netpack/net.py iface_ipv4.
+iface_ipv4() {
+  local row
+  row="$(ip -o -4 addr show dev "$1" scope global 2>/dev/null \
+    | parse_global_ifaces | head -1)"
+  row="${row#*$'\t'}"
+  printf '%s\n' "${row%%/*}"
+}
+
+# multihomed_note VIA [HINT] — amber note when more than one interface holds a
+# global IPv4 address: name them all and which one this run's probes ride, so
+# evidence collected on the wrong network says so on its face.
+multihomed_note() {
+  local via=$1 hint=${2:-} rows n list
+  rows="$(global_ifaces)"
+  [[ -n "$rows" ]] || return 0
+  n="$(printf '%s\n' "$rows" | awk -F'\t' '!seen[$1]++ { n++ } END { print n }')"
+  (( n > 1 )) || return 0
+  list="$(printf '%s\n' "$rows" \
+    | awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }')"
+  if [[ -n "$via" ]]; then
+    note "multi-homed (${list}); probes leave via ${via}${hint:+ — ${hint}}"
+  else
+    note "multi-homed (${list}); probes follow the routing table${hint:+ — ${hint}}"
+  fi
 }
 
 is_uint() {

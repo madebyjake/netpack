@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 IFACE=""
 MB=20

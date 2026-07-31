@@ -165,6 +165,53 @@ dedupe_by_value() {
   awk -F'\t' '!seen[$2]++'
 }
 
+# --- ip route / addr ----------------------------------------------------------
+#
+# Multi-homed awareness: the routed tools name the interface their probes ride,
+# and splitloss/mtucheck can bind to a chosen uplink. These parse the iproute2
+# output the lib/netpack.sh wrappers feed them.
+
+# Print the first `dev` value from `ip route get` (or `ip route show`) output.
+# Empty output when no dev field is present (unroutable target).
+# Reads FILE when given, else stdin.
+parse_route_dev() {
+  awk '
+    {
+      for (i = 1; i < NF; i++) {
+        if ($i == "dev") { print $(i + 1); exit }
+      }
+    }
+  ' ${1:+"$1"}
+}
+
+# Print the gateway from `ip route show default [dev IFACE]` output: the `via`
+# of the first default line (iproute2 lists them metric-ascending, so the first
+# is the one the kernel prefers). A dev-filtered line omits the dev field but
+# keeps `via`. Empty output when there is no default route.
+# Reads FILE when given, else stdin.
+parse_default_via() {
+  awk '
+    /^default / {
+      for (i = 1; i < NF; i++) {
+        if ($i == "via") { print $(i + 1); exit }
+      }
+    }
+  ' ${1:+"$1"}
+}
+
+# "iface<TAB>cidr" rows from `ip -o -4 addr show scope global` output, one per
+# address, in input order — an interface with two addresses yields two rows.
+# Reads FILE when given, else stdin.
+parse_global_ifaces() {
+  awk '
+    {
+      for (i = 3; i < NF; i++) {
+        if ($i == "inet") { print $2 "\t" $(i + 1); break }
+      }
+    }
+  ' ${1:+"$1"}
+}
+
 # --- shared verdict helpers ---------------------------------------------------
 
 # classify_loss_set THRESHOLD PCT... -> none | clean | mixed | all
