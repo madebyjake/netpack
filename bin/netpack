@@ -330,7 +330,14 @@ render_menu() {
       title=${section%%:*}
       read -r -a section_tools <<<"${section#*:}"
       echo
-      printf '  %s%s%s\n' "$C_DIM" "$title" "$C_OFF"
+      # Rule out to the banner width (42), amber around the plain title.
+      # Built by substitution rather than substring so a C locale cannot
+      # slice the multibyte dash mid-character.
+      local fill=''
+      printf -v fill '%*s' "$(( 42 - 4 - ${#title} ))" ''
+      fill=${fill// /─}
+      printf '  %s──%s %s %s%s%s\n' \
+        "$C_AMBER" "$C_OFF" "$title" "$C_AMBER" "$fill" "$C_OFF"
       for name in "${section_tools[@]}"; do
         tool_row "$i" "$name"
         i=$((i + 1))
