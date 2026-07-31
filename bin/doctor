@@ -105,6 +105,15 @@ else
   printf '  %-14s %s\n' "netpack/npk" "$(color_status bad "MISSING or not executable")"
   MISSING=$((MISSING + 1))
 fi
+# The menu's auto-elevation of root tools shells out to sudo; irrelevant when
+# already root, and direct `sudo <tool>` still works either way.
+if [[ "$(id -u)" -ne 0 ]]; then
+  if have sudo; then
+    printf '  %-14s %s\n' "sudo" "$(color_status ok)"
+  else
+    printf '  %-14s %s\n' "sudo" "$(color_status warn "absent — the menu cannot auto-elevate root tools")"
+  fi
+fi
 
 section "shared commands"
 for c in ip ping dig awk sort; do
@@ -130,7 +139,8 @@ tool_header() {
 }
 
 tool_header dhcpprobe
-check_cmd python3 || MISSING=$((MISSING + 1))
+# python3 is counted once, in the runtime section; per-tool rows only restate it.
+check_cmd python3 || true
 if have python3 && python3 -c 'import scapy' 2>/dev/null; then
   printf '  %-14s %s\n' "scapy" "$(color_status ok)"
 else
@@ -164,7 +174,7 @@ check_cmd iw || MISSING=$((MISSING + 1))
 echo
 
 tool_header discover
-check_cmd python3 || MISSING=$((MISSING + 1))
+check_cmd python3 || true
 echo
 
 tool_header splitloss
@@ -201,7 +211,7 @@ check_cmd dig || MISSING=$((MISSING + 1))
 echo
 
 tool_header mcastcheck
-check_cmd python3 || MISSING=$((MISSING + 1))
+check_cmd python3 || true
 echo
 
 tool_header ringcap
