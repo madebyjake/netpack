@@ -141,8 +141,8 @@ The throughput and bufferbloat procedures need a second machine running
 
 **Prove local throughput or one-way UDP loss**
 
-1. On the uConsole: `sudo testsrv`
-2. On the machine under test: `testcli <uconsole-ip>` (TCP) or `testcli -u <uconsole-ip>` (UDP)
+1. On the netpack box: `sudo testsrv`
+2. On the machine under test: `testcli <server-ip>` (TCP) or `testcli -u <server-ip>` (UDP)
 
 **Prove latency and jitter under load (bufferbloat)**
 

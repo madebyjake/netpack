@@ -391,7 +391,7 @@ render_menu() {
 MENU_LEVELS=("1 1 1" "0 1 1" "0 1 0" "0 0 0")
 
 # draw_menu ALLOW_BANNER — sheds decoration on short terminals so the tool rows
-# and the prompt stay on screen (the uConsole console is not tall).
+# and the prompt stay on screen (field terminals are often short).
 draw_menu() {
   local allow_banner=$1
   local rows level

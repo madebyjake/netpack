@@ -24,9 +24,9 @@ testcli — iperf3 client for planned throughput/loss tests against testsrv.
 Generates significant traffic. Use only during planned tests on live networks.
 
 Typical pair:
-  On uConsole:  sudo testsrv -p 5201
-  On client:    testcli <uconsole-ip>
-                testcli -u -b 5M <uconsole-ip>
+  On the far end:   sudo testsrv -p 5201
+  On this machine:  testcli <server-ip>
+                    testcli -u -b 5M <server-ip>
 
 UDP mode uses a controlled rate suitable for game-like loss checks. The UDP
 report Lost/Total is one-way loss on the path under test.
