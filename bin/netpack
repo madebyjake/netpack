@@ -304,6 +304,16 @@ build_menu_index() {
   done
 }
 
+# menu_rule TITLE — amber rule to the banner width (42) around a plain title.
+# Substitution, not substring: a C locale would slice the multibyte dash.
+menu_rule() {
+  local title=$1 fill=''
+  printf -v fill '%*s' "$(( 42 - 4 - ${#title} ))" ''
+  fill=${fill// /─}
+  printf '  %s──%s %s %s%s%s\n' \
+    "$C_AMBER" "$C_OFF" "$title" "$C_AMBER" "$fill" "$C_OFF"
+}
+
 # A non-tool menu row, aligned with the tag columns tool_row uses.
 plain_row() {
   printf '  %2s) %s%-10s%s  %-5s  %-5s   %s\n' \
@@ -328,14 +338,7 @@ render_menu() {
       title=${section%%:*}
       read -r -a section_tools <<<"${section#*:}"
       echo
-      # Rule out to the banner width (42), amber around the plain title.
-      # Built by substitution rather than substring so a C locale cannot
-      # slice the multibyte dash mid-character.
-      local fill=''
-      printf -v fill '%*s' "$(( 42 - 4 - ${#title} ))" ''
-      fill=${fill// /─}
-      printf '  %s──%s %s %s%s%s\n' \
-        "$C_AMBER" "$C_OFF" "$title" "$C_AMBER" "$fill" "$C_OFF"
+      menu_rule "$title"
       for name in "${section_tools[@]}"; do
         tool_row "$i" "$name"
         i=$((i + 1))
@@ -349,6 +352,10 @@ render_menu() {
     done
   fi
   echo
+  # The letter rows get a rule of their own; it sheds with the section rules.
+  if (( sections )); then
+    menu_rule "Menu keys"
+  fi
   tool_row d doctor
   plain_row p playbook "Guided sequences for a symptom"
   if (( ${#LAST_RUN[@]} )); then
@@ -358,9 +365,7 @@ render_menu() {
   echo
   if (( legend )); then
     print_legend
-    # The prompt itself is terse; this hint carries what it no longer says.
-    # Amber and adjacent so prompt and hint read as one unit. Emitted here so
-    # draw_menu's fit test sheds it with the full legend.
+    # Emitted inside render_menu so the fit test sheds it with the legend.
     echo
     printf '  %s↑↓ select · number or name · ? for keys · q to quit%s\n' \
       "$C_AMBER" "$C_OFF"
