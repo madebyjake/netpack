@@ -13,6 +13,21 @@ setup() {
   NETPACK_SOURCE_ONLY=1 source "${REPO}/bin/netpack"
 }
 
+# A local port with nothing listening. Hardcoding a port (22, say) breaks on
+# hosts that run the service: GitHub-hosted runners keep sshd up, so a "closed
+# port" probe against 22 succeeds there and inverts the expected exit code.
+closed_port() {
+  local p
+  for p in 47321 47322 47323 47324 47325; do
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/${p}") 2>/dev/null; then
+      echo "$p"
+      return 0
+    fi
+  done
+  echo "no closed port found in probe range" >&2
+  return 1
+}
+
 @test "every menu tool has metadata and an executable" {
   for t in "${TOOLS[@]}"; do
     [ -n "${TOOL_DESC[$t]:-}" ] || { echo "no description: $t"; return 1; }
@@ -87,9 +102,11 @@ setup() {
 
 @test "capture writes a log, a manifest row, and preserves the exit code" {
   local dir="${BATS_TEST_TMPDIR}/cap"
+  local port
+  port="$(closed_port)"
   # portcheck against a closed local port exits 2: a non-zero code that is a
   # diagnostic result, so it must survive the tee pipeline unchanged.
-  run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 22
+  run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 "$port"
   [ "$status" -eq 2 ]
   [ -f "${dir}/manifest.tsv" ]
 
@@ -103,7 +120,7 @@ setup() {
   row="$(grep -v '^#' "${dir}/manifest.tsv")"
   [ "$(printf '%s\n' "$row" | wc -l)" -eq 1 ]
   [ "$(printf '%s' "$row" | cut -f3)" = "2" ]
-  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 22" ]
+  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port}" ]
 }
 
 @test "capture appends across runs and keeps the directory owner-only" {
