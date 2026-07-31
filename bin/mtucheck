@@ -62,6 +62,7 @@ GW="$(default_gateway)"
 ping_df() {
   local host=$1
   local payload=$2
+  pulse "${host}: DF probe, payload ${payload}"
   ping -c2 -W1 -M "do" -s "$payload" "$host" >/dev/null 2>&1
 }
 
@@ -75,6 +76,9 @@ largest_ok() {
   fi
   # Confirm small size works
   if ! ping_df "$host" "$lo"; then
+    # SC2119: pulse_done's argument is an optional final message, not wanted here.
+    # shellcheck disable=SC2119
+    pulse_done
     echo "0"
     return 1
   fi
@@ -88,6 +92,8 @@ largest_ok() {
       hi=$((mid - 1))
     fi
   done
+  # shellcheck disable=SC2119
+  pulse_done
   echo "$best"
 }
 
