@@ -294,6 +294,7 @@ print_keys() {
 
 MENU_TOOLS=()   # menu number (1-based) -> tool name
 LAST_RUN=()     # most recent menu invocation: [sudo] tool args...
+MENU_INT=0      # set by the menu-scope INT trap; read_menu_line clears the line
 
 build_menu_index() {
   local section
@@ -716,7 +717,9 @@ menu_run() {
   echo
 
   # Ctrl-C is how ringcap, splitloss and mcastcheck recv are meant to be
-  # stopped; ignore it here so stopping the tool returns to the menu.
+  # stopped; ignore it here so stopping the tool returns to the menu. The
+  # menu-scope trap is restored afterwards, not cleared: the prompts that
+  # follow rely on it to survive a Ctrl-C.
   trap ':' INT
   if [[ -n "$CAPTURE_DIR" ]]; then
     capture_run "$name" \
@@ -724,7 +727,7 @@ menu_run() {
   else
     "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
   fi
-  trap - INT
+  trap 'MENU_INT=1' INT
 
   echo
   if (( rc == 0 )); then
@@ -852,17 +855,37 @@ quit() {
 # accepts; typed input behaves as before, including trailing arguments.
 read_menu_line() {
   MENU_LINE=''
+  MENU_INT=0
   if [[ ! -t 0 ]]; then
     IFS= read -r MENU_LINE || return 1
     return 0
   fi
   local -a cycle=("${MENU_TOOLS[@]}" doctor playbook quit)
-  local n=${#cycle[@]} line='' key seq idx=-1
+  local n=${#cycle[@]} line='' key seq tail rc idx=-1
   redraw() {
     printf '\r  %snpk>%s %s\033[K' "$C_AMBER" "$C_OFF" "$line"
   }
   while :; do
-    IFS= read -rsn1 key || key=$'\004'
+    # The timeout is a polling tick, not a deadline: bash restarts a read that
+    # a trapped signal interrupted, so the MENU_INT flag Ctrl-C sets would
+    # otherwise go unseen until the next keypress. Each tick checks it.
+    rc=0
+    IFS= read -rsn1 -t 0.5 key || rc=$?
+    if (( rc != 0 )); then
+      if (( MENU_INT )); then
+        # Ctrl-C clears the line and re-prompts, matching the shell reflex;
+        # quitting stays on q / Ctrl-D.
+        MENU_INT=0
+        line=''
+        idx=-1
+        redraw
+        continue
+      fi
+      if (( rc > 128 )); then
+        continue
+      fi
+      key=$'\004'
+    fi
     case "$key" in
       $'\033')
         # Arrows arrive as ESC [ A/B (or ESC O A/B in application mode);
@@ -877,6 +900,14 @@ read_menu_line() {
             else
               idx=$(( (idx - 1 + n) % n ))
             fi
+            ;;
+          '['[0-9])
+            # CSI with parameters (Delete = ESC [ 3 ~, F5 = ESC [ 1 5 ~ …):
+            # consume through the final byte so no stray ~ lands in the line.
+            while IFS= read -rsn1 -t 0.05 tail; do
+              case "$tail" in [a-zA-Z~]) break ;; esac
+            done
+            continue
             ;;
           *) continue ;;
         esac
@@ -917,6 +948,10 @@ menu() {
   local sel name banner=1
   local -a fields=()
   build_menu_index
+  # Menu-scope Ctrl-C: sets a flag the prompt loop reads (clear the line) and
+  # makes every other read in the menu fail like EOF, which each prompt already
+  # handles as cancel-or-quit — instead of killing the launcher mid-read.
+  trap 'MENU_INT=1' INT
   splash_maybe
   while :; do
     draw_menu "$banner"
