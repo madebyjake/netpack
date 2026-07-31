@@ -497,6 +497,13 @@ prompt_args() {
     mcastcheck)
       ask_choice "Mode — recv listens, send transmits probes" recv recv send || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")
+      # Group and port are what a Dante/NDI check must get right; testing the
+      # pair-test default against a production flow is a misleading negative.
+      ask_value "GROUP (production flows: from Dante Controller / the NDI sender)" \
+        "239.192.77.77" || return 1
+      PROMPT_ARGS+=(-g "$REPLY_VALUE")
+      ask_value "PORT" "7788" || return 1
+      PROMPT_ARGS+=(-p "$REPLY_VALUE")
       ;;
   esac
 }
