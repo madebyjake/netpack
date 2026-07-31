@@ -763,7 +763,7 @@ pause() {
 
 quit() {
   echo
-  printf '%sBye!%s\n' "$C_AMBER" "$C_OFF"
+  printf '%sSee you, space cowboy...%s\n' "$C_AMBER" "$C_OFF"
   exit 0
 }
 
