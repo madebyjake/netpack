@@ -74,6 +74,12 @@ still leave evidence behind; tools that have `--dump` also write
 
 The menu shows `rec <dir>` in its status line while capture is active.
 
+Privilege note: logs are written by the launcher, so a menu session run as your
+user keeps them yours even when a tool is elevated — but that elevated tool
+writes its JSON dump as root, and running the launcher itself under sudo makes
+the whole directory root-owned. Keep one capture directory to one privilege
+level, or `chown -R` it afterwards.
+
 Capture covers runs started through the launcher — `npk <tool>`, the menu, and
 playbooks. A tool invoked directly by name (`dhcpprobe -i eth0`, with `bin/` on
 PATH) bypasses it and is not recorded. If you are collecting evidence, drive the
