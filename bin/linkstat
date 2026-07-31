@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import cli, link, report
-from netpack.net import NetError, resolve_iface
+from netpack.net import NetError, is_wireless, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -116,12 +116,6 @@ def read_carrier_changes(iface: str) -> int:
         return int(path.read_text(encoding="utf-8").strip())
     except (FileNotFoundError, ValueError, OSError):
         return 0
-
-
-def is_wireless(iface: str) -> bool:
-    return Path(f"/sys/class/net/{iface}/wireless").is_dir() or iface.startswith(
-        ("wlan", "wlp", "wlx")
-    )
 
 
 def _run(cmd: list[str]) -> str | None:

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import cli, link, report
-from netpack.net import NetError, resolve_iface
+from netpack.net import NetError, is_wireless, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -83,12 +83,6 @@ def _have(cmd: str) -> bool:
     from shutil import which
 
     return which(cmd) is not None
-
-
-def is_wireless(iface: str) -> bool:
-    return Path(f"/sys/class/net/{iface}/wireless").is_dir() or iface.startswith(
-        ("wlan", "wlp", "wlx")
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
