@@ -87,3 +87,17 @@ needs_root() {
 impact_note() {
   printf '%s\n' "${TOOL_IMPACT[$1]:-}"
 }
+
+# Tools that can write JSON evidence with --dump. capture_run consults this to
+# collect JSON alongside the terminal log while -o capture is active.
+TOOL_JSON=(cabletest dhcpprobe discover linkstat mcastcheck)
+
+supports_dump() {
+  local t
+  for t in "${TOOL_JSON[@]}"; do
+    if [[ "$t" == "$1" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}

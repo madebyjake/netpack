@@ -123,6 +123,27 @@ closed_port() {
   [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port}" ]
 }
 
+@test "capture auto-dumps JSON for tools that support it" {
+  local dir="${BATS_TEST_TMPDIR}/cap-json"
+  # linkstat against loopback: dump-capable, needs no root and no network.
+  run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" linkstat -i lo -t 1
+  [ "$status" -eq 0 ]
+  local dumps=("${dir}"/linkstat-*.json)
+  [ "${#dumps[@]}" -eq 1 ]
+  grep -q '"tool": "linkstat"' "${dumps[0]}"
+}
+
+@test "capture leaves an operator-chosen --dump path alone" {
+  local dir="${BATS_TEST_TMPDIR}/cap-json2"
+  run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" \
+    linkstat -i lo -t 1 --dump "${dir}/custom.json"
+  [ "$status" -eq 0 ]
+  grep -q '"tool": "linkstat"' "${dir}/custom.json"
+  # No second, auto-named dump alongside the chosen one.
+  local dumps=("${dir}"/linkstat-*.json)
+  [ ! -e "${dumps[0]}" ]
+}
+
 @test "capture appends across runs and keeps the directory owner-only" {
   local dir="${BATS_TEST_TMPDIR}/cap2"
   env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 22 >/dev/null || true

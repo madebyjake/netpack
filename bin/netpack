@@ -127,7 +127,8 @@ Evidence capture:
   Each run writes DIR/<tool>-<timestamp>.log (the terminal report, plus stderr,
   in plain text) and appends a row to DIR/manifest.tsv recording the command,
   its start and end times, and its exit code. This is how tools without their
-  own --dump still leave evidence; tools that do write JSON still do.
+  own --dump still leave evidence; tools that have --dump also write
+  DIR/<tool>-<timestamp>.json automatically (an explicit --dump path wins).
 
   Only runs started through the launcher are captured. Invoking a tool directly
   by name bypasses it, so drive an evidence session through ${me}.
@@ -551,6 +552,18 @@ capture_run() {
   stamp="$(date +%Y%m%d-%H%M%S)"
   log="${CAPTURE_DIR}/${name}-${stamp}.log"
   manifest="${CAPTURE_DIR}/manifest.tsv"
+  # JSON-capable tools dump into the capture directory as well, so the evidence
+  # folder is complete without the operator naming a --dump path per run. An
+  # explicit --dump in the arguments wins.
+  local has_dump=0
+  for arg in "$@"; do
+    if [[ "$arg" == --dump || "$arg" == --dump=* ]]; then
+      has_dump=1
+    fi
+  done
+  if supports_dump "$name" && (( ! has_dump )); then
+    set -- "$@" --dump "${CAPTURE_DIR}/${name}-${stamp}.json"
+  fi
   # Record the command as it would be retyped ("sudo segscan -i eth0"), not the
   # resolved bin path — the manifest is meant to be reproducible by a reader.
   for arg in "$@"; do

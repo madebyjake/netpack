@@ -69,7 +69,8 @@ Each run writes `DIR/<tool>-<timestamp>.log` (the terminal report and its
 stderr, in plain text) and appends a row to `DIR/manifest.tsv` recording the
 command as you would retype it, its start and end times, and its exit code. The
 directory is created mode 700. This is how the tools without their own `--dump`
-still leave evidence behind; tools that write JSON still do so as well.
+still leave evidence behind; tools that have `--dump` also write
+`DIR/<tool>-<timestamp>.json` automatically (an explicit `--dump` path wins).
 
 The menu shows `rec <dir>` in its status line while capture is active.
 
@@ -210,7 +211,7 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
   loudly instead of quietly testing the default target.
 - Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
 - JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`), and `mcastcheck send` records `interrupted`.
-- JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `discover`, `mcastcheck`). Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
+- JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `cabletest`, `discover`, `mcastcheck`); under `-o DIR` capture those tools dump into the capture directory automatically. Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.
 - `discover` requests unicast mDNS replies (QU); responders that only multicast are not captured, so it is best-effort, not an exhaustive inventory.
 - `discover` labels known mDNS service types (Dante, NDI, AirPlay, printers, …) and lists real-time AV advertisers separately. Unrecognized types print verbatim. Vendor service names change between product generations, so treat a label as convenience, not authority.
