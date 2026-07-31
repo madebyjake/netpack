@@ -57,7 +57,9 @@ validate_iface() {
 
 default_iface() {
   local iface
-  iface="$(ip -o route get 1.1.1.1 2>/dev/null | parse_route_dev)"
+  # || true: a box with no default route makes `ip route get` fail, and under
+  # pipefail that would abort the tool here instead of reaching the fallback.
+  iface="$(ip -o route get 1.1.1.1 2>/dev/null | parse_route_dev)" || true
   if [[ -n "${iface}" && -d "/sys/class/net/${iface}" ]]; then
     printf '%s\n' "$iface"
     return 0
@@ -95,9 +97,11 @@ iface_gateway() {
 }
 
 # Interface the kernel would use to reach TARGET; empty when unroutable (or
-# when TARGET is an unresolvable name).
+# when TARGET is an unresolvable name). The || true guards matter: these run
+# inside $( ) assignments in tools under set -e, and an unroutable target or a
+# missing ip must read as "unknown", not kill the tool mid-report.
 route_iface() {
-  ip -o route get "$1" 2>/dev/null | parse_route_dev
+  ip -o route get "$1" 2>/dev/null | parse_route_dev || true
 }
 
 # route_iface, but only for IPv4 literals — resolving a hostname here would
@@ -110,7 +114,7 @@ via_for() {
 
 # "iface<TAB>cidr" rows for every global IPv4 address on the system.
 global_ifaces() {
-  ip -o -4 addr show scope global 2>/dev/null | parse_global_ifaces
+  ip -o -4 addr show scope global 2>/dev/null | parse_global_ifaces || true
 }
 
 # First global IPv4 address (no prefix) on IFACE; empty when none.
@@ -118,7 +122,7 @@ global_ifaces() {
 iface_ipv4() {
   local row
   row="$(ip -o -4 addr show dev "$1" scope global 2>/dev/null \
-    | parse_global_ifaces | head -1)"
+    | parse_global_ifaces | head -1)" || true
   row="${row#*$'\t'}"
   printf '%s\n' "${row%%/*}"
 }
