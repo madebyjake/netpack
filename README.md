@@ -211,6 +211,7 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 ## Production notes
 
 - All tools are IPv4-only (DHCP, ARP, MTU header math, default targets). Dual-stack faults on the v6 side are out of scope.
+- On a multi-homed machine (eth into the segment under test plus Wi-Fi for internet, or two uplinks) the routed tools follow the routing table and say so: the report names the interface the probes ride, a `note:` lists every addressed interface, and the menu's context line shows the others under `also`. `splitloss -i` and `mtucheck -i` instead bind to a chosen uplink and test *its* gateway; their WAN leg runs only when a policy route (`ip rule`) steers that interface's address out that uplink — without one, replies would follow the main table and rp_filter can drop them, so the WAN leg is reported untestable and the run exits 1 rather than fabricating loss.
 - Prefer least privilege: tools that need root say so and exit cleanly.
 - Every tool rejects arguments it does not understand (exit 1) rather than
   falling back to defaults, so a typo like `splitloss -t 60 8.8.8.8` fails
