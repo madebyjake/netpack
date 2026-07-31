@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 TIMEOUT=5
 
@@ -98,19 +100,21 @@ probe() {
   capture_skew
   IFS=$'\t' read -r status redirect <<<"$out"
   got_body="$(tr -d '[:space:]' < "$body")"
-  if [[ "$status" == "$want_status" && "$got_body" == "$want_body" ]]; then
-    echo "  status ${status}  $(color_status ok)"
-    return
-  fi
-  if [[ "$status" != "$want_status" ]]; then
-    if [[ -n "$redirect" ]]; then
+  case "$(classify_http_probe "$status" "$want_status" "$got_body" "$want_body" "$redirect")" in
+    ok)
+      echo "  status ${status}  $(color_status ok)"
+      return
+      ;;
+    redirect)
       echo "  status ${status}  $(color_status warn "REDIRECT -> ${redirect}")"
-    else
+      ;;
+    status)
       echo "  status ${status}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
-    fi
-  else
-    echo "  status ${status}  $(color_status warn "UNEXPECTED BODY (interception suspected)")"
-  fi
+      ;;
+    *)
+      echo "  status ${status}  $(color_status warn "UNEXPECTED BODY (interception suspected)")"
+      ;;
+  esac
   UNEXPECTED=$((UNEXPECTED + 1))
 }
 

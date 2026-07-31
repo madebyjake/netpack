@@ -68,6 +68,9 @@ and flow control. EEE is called out because low-power idle adds wake latency
 and jitter, which destabilizes real-time media clocking (Dante/AES67, PTP) and
 VoIP. These are settings, not counters, so they never change the exit code.
 
+When the counters point at the physical layer, `cabletest` measures the cable
+itself.
+
 Usage:
   linkstat [-i IFACE] [-t SECONDS] [--dump FILE]
 
@@ -303,7 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         print(_usage(), end="")
         return EXIT_OK
 
-    if args.timeout <= 0:
+    timeout = args.timeout
+    if timeout <= 0:
         print("error: timeout must be positive", file=sys.stderr)
         return EXIT_ERROR
 
@@ -323,9 +327,9 @@ def main(argv: list[str] | None = None) -> int:
     before = snap_counters(iface)
     bytes_before = snap_bytes(iface)
     carrier_before = read_carrier_changes(iface)
-    report.progress(f"sampling {args.timeout:g}s on {iface} ...")
+    report.progress(f"sampling {timeout:g}s on {iface} ...")
     try:
-        time.sleep(args.timeout)
+        time.sleep(timeout)
     except KeyboardInterrupt:
         print("error: interrupted", file=sys.stderr)
         return EXIT_INTERRUPT
@@ -336,13 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     byte_deltas = {k: max(0, bytes_after[k] - bytes_before[k]) for k in BYTE_COUNTERS}
     flaps = max(0, carrier_after - carrier_before)
 
-    code = print_report(iface, args.timeout, deltas, byte_deltas, flaps, info, wireless)
+    code = print_report(iface, timeout, deltas, byte_deltas, flaps, info, wireless)
 
     if args.dump:
         payload: dict[str, Any] = {
             "tool": "linkstat",
             "iface": iface,
-            "timeout_s": args.timeout,
+            "timeout_s": timeout,
             "wireless": wireless,
             "link": info,
             "before": before,
@@ -351,8 +355,8 @@ def main(argv: list[str] | None = None) -> int:
             "bytes_before": bytes_before,
             "bytes_after": bytes_after,
             "byte_deltas": byte_deltas,
-            "rx_mbit_s": round(mbit_s(byte_deltas["rx_bytes"], args.timeout), 3),
-            "tx_mbit_s": round(mbit_s(byte_deltas["tx_bytes"], args.timeout), 3),
+            "rx_mbit_s": round(mbit_s(byte_deltas["rx_bytes"], timeout), 3),
+            "tx_mbit_s": round(mbit_s(byte_deltas["tx_bytes"], timeout), 3),
             "carrier_changes_delta": flaps,
             "assessment_code": code,
         }

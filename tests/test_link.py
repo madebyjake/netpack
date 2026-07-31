@@ -9,10 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack.link import (
+    cable_faults,
+    cable_is_ok,
+    cable_test_error,
     eee_is_enabled,
     format_pause,
+    parse_cable_test,
     parse_eee,
     parse_ethtool,
+    parse_ethtool_driver,
     parse_iw_link,
     parse_pause,
 )
@@ -124,3 +129,78 @@ def test_parse_iw_link_extracts_association() -> None:
 
 def test_parse_iw_link_when_not_associated() -> None:
     assert parse_iw_link("Not connected.\n") == {}
+
+
+CABLE_FAULT = """\
+Cable test started for device enp3s0.
+Cable test completed for device enp3s0.
+Pair A code OK
+Pair B code OK
+Pair C code Open Circuit
+Pair C, fault length: 25.40m
+Pair D code Short within Pair
+Pair D, fault length: 1.20m
+"""
+
+CABLE_CLEAN = """\
+Cable test started for device enp3s0.
+Cable test completed for device enp3s0.
+Pair A code OK
+Pair B code OK
+Pair C code OK
+Pair D code OK
+"""
+
+
+def test_parse_cable_test_merges_code_and_fault_length() -> None:
+    rows = parse_cable_test(CABLE_FAULT)
+    assert [r["pair"] for r in rows] == ["A", "B", "C", "D"]
+    assert rows[2] == {"pair": "C", "code": "Open Circuit", "fault_length_m": 25.4}
+    assert rows[3]["code"] == "Short within Pair"
+    assert rows[3]["fault_length_m"] == 1.2
+    # Passing pairs carry no distance.
+    assert "fault_length_m" not in rows[0]
+
+
+def test_parse_cable_test_ignores_the_progress_lines() -> None:
+    assert len(parse_cable_test(CABLE_CLEAN)) == 4
+    assert parse_cable_test("Cable test started for device enp3s0.\n") == []
+
+
+def test_cable_faults_selects_only_failing_pairs() -> None:
+    faults = cable_faults(parse_cable_test(CABLE_FAULT))
+    assert [f["pair"] for f in faults] == ["C", "D"]
+    assert cable_faults(parse_cable_test(CABLE_CLEAN)) == []
+
+
+def test_cable_is_ok_does_not_treat_silence_as_a_pass() -> None:
+    # A pair with no code reported must not count as healthy: an unreported
+    # pair is missing evidence, not good evidence.
+    assert cable_is_ok("OK")
+    assert cable_is_ok("ok")
+    assert not cable_is_ok("")
+    assert not cable_is_ok(None)
+    assert not cable_is_ok("Open Circuit")
+
+
+ETHTOOL_I = """\
+driver: e1000e
+version: 7.0.9-205.fc44.x86_64
+firmware-version: 0.2-4
+bus-info: 0000:00:1f.6
+supports-statistics: yes
+"""
+
+
+def test_parse_ethtool_driver_names_the_driver() -> None:
+    assert parse_ethtool_driver(ETHTOOL_I) == "e1000e"
+    assert parse_ethtool_driver("") is None
+
+
+def test_cable_test_error_separates_unsupported_from_denied() -> None:
+    # These are the two failures an operator actually hits, and the next step
+    # differs: one means use another port, the other means fix privileges.
+    assert cable_test_error("netlink error: Operation not supported") == "unsupported"
+    assert cable_test_error("netlink error: Operation not permitted") == "permission"
+    assert cable_test_error("netlink error: No such device") == "unknown"
+    assert cable_test_error("") == "unknown"

@@ -172,6 +172,32 @@ progress() {
   printf '%s%s%s' "$NP_CE_WARN" "$*" "$NP_CE_OFF"
 }
 
+# pulse MESSAGE — one-line liveness ticker for long waits. A star at the head
+# of the line steps through the splash's twinkle characters each call, so the
+# animation advances only when the tool is really making progress. Drawn only
+# when stderr is an interactive terminal: logs, pipes, and captured evidence
+# never see ticker frames. Callers end the line with pulse_done.
+NP_PULSE_FRAMES=('.' '+' '*' '+')
+NP_PULSE_I=0
+pulse() {
+  [[ -t 2 ]] || return 0
+  printf '\r%s%s %s%s\033[K' \
+    "$NP_CE_WARN" "${NP_PULSE_FRAMES[NP_PULSE_I]}" "$*" "$NP_CE_OFF" >&2
+  NP_PULSE_I=$(( (NP_PULSE_I + 1) % ${#NP_PULSE_FRAMES[@]} ))
+}
+
+# pulse_done [MESSAGE] — clear the ticker line, then print MESSAGE (if given)
+# as an ordinary progress line. The message prints even without a TTY, so the
+# final state of a long run still lands in logs and captured evidence.
+pulse_done() {
+  if [[ -t 2 ]]; then
+    printf '\r\033[K' >&2
+  fi
+  if [[ $# -gt 0 ]]; then
+    printf '%s\n' "$(progress "$*")" >&2
+  fi
+}
+
 # Color a loss percentage: green if <=1, red if >1 (matches tool thresholds).
 color_loss_pct() {
   local p=$1

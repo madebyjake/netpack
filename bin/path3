@@ -34,10 +34,14 @@ Options:
 Notes:
   Prefer loss that appears at the final hop and is consistent across protocols.
   Intermediate-only loss is often control-plane deprioritization, not forwarding loss.
+  Final-hop loss on every protocol is forwarding loss; loss on only some is
+  usually per-protocol policing or rate limiting of that probe type.
 
 Exit codes:
-  0  all three modes produced usable reports
+  0  all modes produced usable reports, no final-hop loss above 1%
   1  usage, dependency, permission, or mode failure
+  2  final-hop loss above 1% on every measured protocol
+  3  final-hop loss above 1% on some protocols but not others
 EOF
 }
 
@@ -98,19 +102,23 @@ run_mode tcp -T -P "$PORT"
 
 echo "=== final-hop summary ==="
 printf '%-5s %-40s %-10s %s\n' "mode" "host" "loss" "avg"
+FINAL_LOSS=()
 for m in icmp udp tcp; do
   f="${DIR}/${m}.txt"
   if [[ ! -s "$f" ]]; then
     printf '%-5s %-40s %-10s %s\n' "$m" "-" "$(color_status bad "-")" "-"
+    FINAL_LOSS+=("-")
     continue
   fi
   IFS=$'\t' read -r host loss avg <<<"$(summarize_final "$f")"
   loss_disp="${loss:--}"
+  loss_num="-"
   if [[ "$loss_disp" != "-" ]]; then
     # summarize_final returns e.g. 4.0%; strip % for threshold helper.
     loss_num="${loss_disp%%%}"
     loss_disp="$(color_loss_pct "$loss_num")"
   fi
+  FINAL_LOSS+=("$loss_num")
   printf '%-5s %-40s %-10s %s\n' "$m" "${host:--}" "$loss_disp" "${avg:--}"
 done
 
@@ -124,6 +132,24 @@ if (( FAILED_MODES > 0 )); then
   finished
   exit 1
 fi
-verdict "all three modes produced usable reports." \
-  "Prefer final-hop loss corroborated across protocols; intermediate-only loss is often control-plane deprioritization."
-finished
+# The report is evidence either way; the exit code says whether it found loss,
+# so a scripted run can tell "the path is clean" from "the path is not".
+case "$(classify_loss_set 1 "${FINAL_LOSS[@]}")" in
+  all)
+    verdict "final-hop loss on every measured protocol." \
+      "Consistent across protocols points at forwarding loss on the path, not probe deprioritization."
+    finished
+    exit 2
+    ;;
+  mixed)
+    verdict "final-hop loss on some protocols but not others." \
+      "Per-protocol loss is usually policing or rate limiting of that probe type; compare the modes above before blaming the path."
+    finished
+    exit 3
+    ;;
+  *)
+    verdict "all three modes produced usable reports; no final-hop loss above 1%." \
+      "Intermediate-only loss in the hop lists is often control-plane deprioritization, not forwarding loss."
+    finished
+    ;;
+esac

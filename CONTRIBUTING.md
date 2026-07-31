@@ -11,11 +11,20 @@ lib/netpack/    Python package, and the bash pieces shared beyond one tool
 tests/          pytest for Python, bats for bash
 ```
 
+Two data tables in `lib/netpack/` drive the launcher and are the only place
+their facts live: `tools.sh` (root/traffic tags, descriptions, impact notes) and
+`playbooks.sh` (guided sequences and the reason for each step).
+
 The split is deliberate: **anything that parses or decides lives in `lib/` as a
 pure function, and `bin/` does the I/O.** That is what makes the logic testable
-without a network, a switch, or root — `link.py` parses `ethtool` text that
-`bin/linkstat` captured, `parsers.sh` parses ping output, `mcast.py` decodes
-probe datagrams. New logic should follow the same shape.
+without a network, a switch, or root — `link.py` parses the `ethtool` text that
+`bin/linkstat` and `bin/cabletest` captured, `mcast.py` decodes probe datagrams,
+and `parsers.sh` holds the same for the bash tools: ping and mtr summaries,
+resolver enumeration, ARP duplicate detection, `iw scan` records, and the
+classifiers behind the HTTP, MTU and loss verdicts.
+
+New logic follows the same shape. A verdict computed inline in `bin/` cannot be
+tested, and that is exactly where the resolver bug in `dnscheck` lived.
 
 ## Development setup
 
@@ -33,32 +42,22 @@ sudo dnf install ShellCheck bats
 
 ## Running the checks
 
-These are the same steps CI runs, in the same order. Run them before opening a
-pull request.
+Run `make check` before opening a pull request.
 
 ```bash
-# Python tests. PYTHONPATH is required: lib/ is not an installed package.
-PYTHONPATH=lib pytest -q tests
-
-# Bash tests (parsers, launcher metadata, exit-code contracts)
-bats tests/*.bats
-
-# Lint
-ruff check lib/netpack tests bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck
-
-# Shellcheck every bash script, selected by shebang
-mapfile -t scripts < <(
-  find bin -type f -exec awk 'FNR == 1 && /^#!.*bash/ { print FILENAME }' {} + | sort
-  find lib -type f -name '*.sh' | sort
-)
-shellcheck --source-path=SCRIPTDIR -x -e SC1091,SC2317,SC2329 "${scripts[@]}"
-
-# Smoke: every tool must answer --help
-bin/netpack list
-for t in $(bin/netpack list | awk 'NR > 2 { if (NF == 0) exit; if ($1 ~ /^[a-z0-9-]+$/) print $1 }'); do
-  bin/netpack "$t" --help >/dev/null || echo "FAIL: $t"
-done
+make check          # everything, in CI's order
+make test           # pytest only
+make bats           # bats only
+make lint           # ruff + shellcheck
+make compile        # py_compile the Python tools
+make smoke          # every tool answers --help
+make help           # all targets
 ```
+
+`.github/workflows/ci.yml` invokes these same targets, one step per target, so
+the Makefile is the single definition of what a check is — a green `make check`
+locally means a green CI run, and the two cannot drift. Change a check in the
+Makefile, not in both places.
 
 `ruff` is pinned to a minor series in `requirements-dev.txt` because its default
 rule set changes between minors, which would turn CI red with no code change.
@@ -70,11 +69,30 @@ rule set changes between minors, which would turn CI red with no code change.
 3. Add the tool name to the right section of `SECTIONS` in `bin/netpack`.
 4. Add a `tool_header <tool>` block to `bin/doctor` for its dependencies.
 5. Add it to the tools table and an example in `README.md`.
+6. If it is a Python tool, add it to `PY_TOOLS` in the `Makefile` so `ruff` and
+   `py_compile` cover it. Bash tools are found by shebang and need nothing.
 
 Steps 2–5 are enforced: `tests/test_launcher.bats` and `tests/test_docs.py` fail
 if a tool is missing metadata, has an unknown tag, is absent from `doctor`, or
 disagrees with the README. That is deliberate — those facts were previously
 restated in five places and silently drifted apart.
+
+## Adding a playbook
+
+Playbooks are the ordered sequences the menu's `p` key and `netpack playbook`
+walk. Add one row to `PLAYBOOK_ROWS` in `lib/netpack/playbooks.sh`, its steps to
+`PLAYBOOK_STEPS`, and the matching `npk playbook <id>` pointer to the README
+sequence it corresponds to.
+
+A step's "why" is required, and it is the point: it says what the operator
+should conclude from the result they are about to see. Steps run through the
+same path as a hand-picked run, so privilege, prompting, impact notices and
+capture all behave identically — leave arguments off a step when the launcher
+already knows how to prompt for them (`portcheck`, `ringcap`, `mcastcheck`).
+
+Only single-machine sequences belong here; anything needing a second host stays
+prose in the README. `tests/test_launcher.bats` fails on a step naming an
+unknown tool, a playbook with fewer than two steps, or a step without a reason.
 
 ## Conventions
 
@@ -95,7 +113,7 @@ uses `lib/netpack.sh`, Python uses `netpack.report`; keep the two in step.
 **Colour.** Only when stdout is a TTY and `NO_COLOR` is unset, so redirected
 evidence stays plain text.
 
-**Safety.** Tools that generate meaningful load carry the `LOUD` tag and an
+**Safety.** Tools that generate meaningful load carry the `loud` tag and an
 impact line. Anything that could disrupt production traffic must be guarded in
 code, not just documented — see `mcastcheck send` refusing Dante's default
 media range without `-y`, and `segscan` refusing sweeps larger than /22

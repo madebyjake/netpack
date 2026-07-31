@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""cabletest — measure the cable itself with ethtool's TDR pair test."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+
+from netpack import cli, link, report
+from netpack.net import NetError, resolve_iface
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_FAULT = 2
+
+
+def _usage() -> str:
+    return """\
+cabletest — run ethtool's TDR cable test and report each pair.
+
+Answers "is the cable bad, and where": time-domain reflectometry pulses each
+pair and reports it as OK or faulted, with the approximate distance to the
+break. Use it when linkstat shows physical-layer counter growth or carrier
+flaps and you need to know whether the cable is the cause.
+
+  Open Circuit          a break, or nothing terminated at the far end
+  Short within Pair     the two conductors of one pair touching
+  Short to another pair conductors bridged across pairs
+  OK                    that pair reflected cleanly
+
+Driver support is the catch. TDR is a PHY feature the network driver has to
+expose, and most desktop and server NICs do not: e1000e, igb and r8169 all
+reject the request. It is common on embedded and switch PHYs, so this is a tool
+for the gear at the edge of a venue rather than for a workstation's onboard
+port. A driver that cannot run the test reports that and exits 1, quoting
+ethtool — an unsupported test is never reported as a pass, and a rejected
+request never disturbs the link.
+
+When the driver does support it, this is not passive: the PHY drops the link to
+measure, so the port goes down for the duration and anything running over it is
+interrupted. It requires root and -y to confirm; it is refused rather than
+assumed.
+
+Usage:
+  cabletest -y [-i IFACE] [--dump FILE]
+
+Options:
+  -i, --iface IFACE   Interface (default: default-route iface)
+  -y, --yes           Confirm the link bounce (required)
+  --dump FILE         Write JSON evidence to FILE
+  -h, --help          Show this help
+
+Exit codes:
+  0  all pairs passed
+  1  usage, interface, or permission error; test unsupported or inconclusive
+  2  one or more pairs faulted
+"""
+
+
+def _run(cmd: list[str]) -> tuple[int, str, str]:
+    """(returncode, stdout, stderr). stderr is kept rather than discarded: when
+    ethtool refuses, its own message is the evidence for why, and guessing on
+    the operator's behalf is worse than quoting it."""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        return 127, "", str(exc)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def driver_name(iface: str) -> str | None:
+    rc, out, _ = _run(["ethtool", "-i", iface])
+    return link.parse_ethtool_driver(out) if rc == 0 else None
+
+
+def _have(cmd: str) -> bool:
+    from shutil import which
+
+    return which(cmd) is not None
+
+
+def is_wireless(iface: str) -> bool:
+    return Path(f"/sys/class/net/{iface}/wireless").is_dir() or iface.startswith(
+        ("wlan", "wlp", "wlx")
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = cli.ArgumentParser(prog="cabletest", add_help=False)
+    parser.add_argument("-i", "--iface")
+    parser.add_argument("-y", "--yes", action="store_true")
+    parser.add_argument("--dump")
+    parser.add_argument("-h", "--help", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.help:
+        print(_usage(), end="")
+        return EXIT_OK
+
+    try:
+        iface = resolve_iface(args.iface)
+    except NetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if is_wireless(iface):
+        print(f"error: {iface} is wireless; the cable test is for wired links", file=sys.stderr)
+        return EXIT_ERROR
+    if not _have("ethtool"):
+        print("error: 'ethtool' not found in PATH", file=sys.stderr)
+        return EXIT_ERROR
+    if os.geteuid() != 0:
+        print("error: root privileges required; re-run with sudo", file=sys.stderr)
+        return EXIT_ERROR
+    # The guard is in code rather than only in the docs: this drops a live port.
+    if not args.yes:
+        print(
+            f"error: the cable test drops the link on {iface} while it measures; "
+            "re-run with -y to confirm",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    report.header("cabletest")
+    print(f"iface: {iface}")
+    driver = driver_name(iface)
+    report.progress(f"running cable test on {iface} (link will bounce) ...")
+    rc, out, err = _run(["ethtool", "--cable-test", iface])
+
+    report.section("pairs")
+    if rc != 0:
+        kind = link.cable_test_error(err)
+        detail = err.strip().splitlines()
+        via = f"the {driver} driver on {iface}" if driver else f"the driver on {iface}"
+        if kind == "unsupported":
+            print(f"  {report.color_status('warn', 'not supported by this NIC')}")
+        else:
+            print(f"  {report.color_status('bad', 'cable test failed')}")
+        # Quote ethtool verbatim: its wording is the evidence, and it will
+        # outlive any guess encoded here.
+        for line in detail:
+            print(f"  ethtool: {line}")
+
+        if kind == "unsupported":
+            report.verdict(
+                f"{via} does not implement cable testing; the link was not disturbed.",
+                "TDR is a PHY feature — common on embedded and switch PHYs, uncommon "
+                "on desktop and server NICs (e1000e, igb, r8169). Test the cable from "
+                "a port whose PHY supports it, or use a standalone cable tester.",
+            )
+        elif kind == "permission":
+            report.verdict(
+                "ethtool was not permitted to run the cable test.",
+                "Re-run with sudo. If already root, a container or LSM policy may be "
+                "blocking CAP_NET_ADMIN.",
+            )
+        else:
+            report.verdict(
+                f"{via} did not run the cable test.",
+                "See the ethtool message above; the link may not have been disturbed.",
+            )
+        report.finished()
+        return EXIT_ERROR
+
+    results = link.parse_cable_test(out)
+    if not results:
+        print(f"  {report.color_status('warn', 'no per-pair results reported')}")
+        report.verdict(
+            "the cable test ran but reported no pair results.",
+            "Treat this as inconclusive rather than a pass; the driver may not "
+            "implement TDR reporting.",
+        )
+        report.finished()
+        return EXIT_ERROR
+
+    for row in results:
+        pair = row.get("pair", "?")
+        code = row.get("code") or "unknown"
+        length = row.get("fault_length_m")
+        detail = f" at ~{length:g} m" if isinstance(length, float) else ""
+        if link.cable_is_ok(code):
+            print(f"  pair {pair}: {report.color_status('ok', str(code))}")
+        else:
+            print(f"  pair {pair}: {report.color_status('bad', str(code))}{detail}")
+
+    faults = link.cable_faults(results)
+    code = EXIT_FAULT if faults else EXIT_OK
+    if faults:
+        named = ", ".join(str(f.get("pair", "?")) for f in faults)
+        report.verdict(
+            f"cable fault on pair(s) {named}.",
+            "Reseat or replace the cable and retest. A fault length is the distance "
+            "from this port to the break.",
+        )
+    else:
+        report.verdict(
+            "all pairs passed the cable test.",
+            "The cable is not the fault; sample counters with `linkstat -t 30` while "
+            "the symptom is present.",
+        )
+
+    if args.dump:
+        payload: dict[str, Any] = {
+            "tool": "cabletest",
+            "iface": iface,
+            "pairs": results,
+            "assessment_code": code,
+        }
+        print(f"dump: {report.write_dump(args.dump, payload)}")
+
+    report.finished()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

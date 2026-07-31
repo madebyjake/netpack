@@ -1,0 +1,12 @@
+Interface: eth0, type: EN10MB, MAC: 00:11:22:33:44:55, IPv4: 192.168.1.42
+Starting arp-scan 1.9.7 with 256 hosts
+192.168.1.1	aa:bb:cc:00:00:01	Ubiquiti Networks Inc.
+192.168.1.10	aa:bb:cc:00:00:02	Dell Inc.
+192.168.1.10	aa:bb:cc:00:00:03	Hewlett Packard
+192.168.1.20	aa:bb:cc:00:00:04	Audinate Pty Ltd
+192.168.1.20	AA:BB:CC:00:00:04	Audinate Pty Ltd (DUP: 2)
+192.168.1.30	aa:bb:cc:00:00:05	Apple, Inc.
+192.168.1.30	aa:bb:cc:00:00:06	Apple, Inc.
+192.168.1.30	aa:bb:cc:00:00:07	Apple, Inc.
+
+8 packets received by filter, 0 packets dropped by kernel

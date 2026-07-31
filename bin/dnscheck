@@ -5,10 +5,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 NAME="cloudflare.com"
-PUBLIC="1.1.1.1"
+PUBLIC=""
 TYPE="A"
+
+# Baseline candidates, preferred first. The default baseline is chosen at run
+# time as the first of these the system is not already using: a baseline drawn
+# from the configured set is not a control, and on a host that forwards to
+# 1.1.1.1 a fixed default would compare that resolver against itself and read
+# as agreement. Cloudflare, Quad9, Google, OpenDNS.
+PUBLIC_CANDIDATES=(1.1.1.1 9.9.9.9 8.8.8.8 208.67.222.222)
 
 usage() {
   cat <<'EOF'
@@ -17,6 +26,12 @@ dnscheck — compare system-configured DNS resolvers with a public resolver.
 Queries the same name via each configured resolver and one public resolver.
 Reports RCODE, addresses, and query time. Disagreement or failure often
 explains "network is down" when ICMP still works.
+
+Resolvers come from `resolvectl dns` when systemd-resolved is running, so the
+real per-link upstreams are tested rather than the 127.0.0.53 stub that
+/etc/resolv.conf advertises; without resolved, resolv.conf is used directly.
+When only a loopback stub can be identified, the run says so and exits 2 — a
+stub proves nothing about the servers it forwards to.
 
 Generates a small number of DNS queries.
 
@@ -32,13 +47,22 @@ Options:
 Note: names with geo or round-robin answers (CDNs) can differ legitimately
 across resolvers. Prefer stable names (the default) for hijack checks.
 
+The baseline defaults to the first of 1.1.1.1, 9.9.9.9, 8.8.8.8, 208.67.222.222
+that the system is not already using, so it is a genuine control rather than one
+of the configured resolvers compared against itself. An explicit -p is used as
+given; if it is also configured, the run says so, since agreement with itself is
+not evidence.
+
 Exit codes:
-  0  configured and public resolvers agree and succeed
+  0  at least two distinct resolvers agreed and succeeded
   1  usage or dependency error
-  2  one or more resolvers failed (or none were configured)
+  2  a resolver failed, no upstreams could be identified, or there was
+     nothing independent to compare against
   3  resolvers returned conflicting answers
 EOF
 }
+
+PUBLIC_EXPLICIT=0
 
 if [[ "${1:-}" == "--help" ]]; then
   usage
@@ -48,7 +72,7 @@ fi
 while getopts ":n:p:t:h" opt; do
   case "$opt" in
     n) NAME=$OPTARG ;;
-    p) PUBLIC=$OPTARG ;;
+    p) PUBLIC=$OPTARG; PUBLIC_EXPLICIT=1 ;;
     t) TYPE=$OPTARG ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
@@ -61,29 +85,48 @@ TYPE="${TYPE^^}"  # dig prints record types uppercase
 
 require_cmd dig awk sort
 
-configured_resolvers() {
-  local resolvers=()
-  if [[ -r /etc/resolv.conf ]]; then
-    while read -r _ ip; do
-      [[ -n "${ip:-}" ]] || continue
-      resolvers+=("$ip")
-    done < <(awk '/^nameserver[[:space:]]+/ {print $1, $2}' /etc/resolv.conf)
-  fi
-  # Deduplicate while preserving order
-  local r out=()
-  for r in "${resolvers[@]+"${resolvers[@]}"}"; do
-    local seen=0 x
-    for x in "${out[@]+"${out[@]}"}"; do
-      [[ "$x" == "$r" ]] && seen=1 && break
-    done
-    if [[ "$seen" -eq 0 ]]; then
-      out+=("$r")
+# Fill RESOLVERS with "label<TAB>server" rows and describe where they came from.
+# Assigns globals rather than printing, because command substitution would run
+# this in a subshell and lose RESOLVER_SOURCE / STUB_ONLY.
+RESOLVERS=()
+RESOLVER_SOURCE=""
+STUB_ONLY=0
+discover_resolvers() {
+  RESOLVERS=()
+  RESOLVER_SOURCE=""
+  STUB_ONLY=0
+  local rows="" srv all_stub=1
+
+  # resolved's stub in resolv.conf hides the real upstreams; ask resolved itself.
+  if command -v resolvectl >/dev/null 2>&1; then
+    # SC2119: the parsers take an optional file and read stdin without one,
+    # which is the form wanted here.
+    # shellcheck disable=SC2119
+    rows="$(resolvectl dns 2>/dev/null | parse_resolvectl_dns | dedupe_by_value)" || rows=""
+    if [[ -n "$rows" ]]; then
+      RESOLVER_SOURCE="resolvectl (systemd-resolved upstreams)"
+      mapfile -t RESOLVERS <<<"$rows"
+      return 0
     fi
-  done
-  if [[ ${#out[@]} -eq 0 ]]; then
-    return 1
   fi
-  printf '%s\n' "${out[@]}"
+
+  if [[ -r /etc/resolv.conf ]]; then
+    rows="$(parse_resolv_conf /etc/resolv.conf \
+      | awk '{ print "resolv.conf\t" $0 }' | dedupe_by_value)" || rows=""
+  fi
+  [[ -n "$rows" ]] || return 1
+
+  RESOLVER_SOURCE="/etc/resolv.conf"
+  while IFS=$'\t' read -r _ srv; do
+    [[ -n "$srv" ]] || continue
+    is_stub_addr "$srv" || all_stub=0
+  done <<<"$rows"
+  # Every entry is loopback: a forwarding stub whose upstreams we cannot see.
+  if (( all_stub )); then
+    STUB_ONLY=1
+    RESOLVER_SOURCE="/etc/resolv.conf (local stub only — upstreams not visible)"
+  fi
+  mapfile -t RESOLVERS <<<"$rows"
 }
 
 query_one() {
@@ -119,47 +162,64 @@ query_one() {
 
 header dnscheck
 echo "name: ${NAME}  type: ${TYPE}"
+
+discover_resolvers || true
+if (( ${#RESOLVERS[@]} == 0 )); then
+  RESOLVER_SOURCE="none found (checked resolvectl and /etc/resolv.conf)"
+fi
+echo "resolvers: ${RESOLVER_SOURCE}"
+
+# True when SERVER is one of the configured resolvers.
+is_configured() {
+  local want=$1 row
+  for row in "${RESOLVERS[@]+"${RESOLVERS[@]}"}"; do
+    [[ "${row#*$'\t'}" == "$want" ]] && return 0
+  done
+  return 1
+}
+
+# Choose the baseline unless -p pinned one: the first candidate the system is
+# not already using, so the control is independent by construction.
+if (( ! PUBLIC_EXPLICIT )); then
+  for candidate in "${PUBLIC_CANDIDATES[@]}"; do
+    if ! is_configured "$candidate"; then
+      PUBLIC=$candidate
+      break
+    fi
+  done
+  # Every candidate is configured: rare, but do not silently pick a duplicate.
+  [[ -n "$PUBLIC" ]] || PUBLIC=${PUBLIC_CANDIDATES[0]}
+fi
+
+BASELINE_SHARED=0
+if is_configured "$PUBLIC"; then
+  BASELINE_SHARED=1
+fi
+
+QUERY_ROWS=("${RESOLVERS[@]+"${RESOLVERS[@]}"}")
+if (( ! BASELINE_SHARED )); then
+  QUERY_ROWS+=("public"$'\t'"$PUBLIC")
+fi
+
 echo
-
-mapfile -t CONF < <(configured_resolvers || true)
-if [[ ${#CONF[@]} -eq 0 ]]; then
-  warning "no nameserver entries in /etc/resolv.conf" >&2
-fi
-
-SERVERS=("${CONF[@]+"${CONF[@]}"}")
-# Always include public baseline once
-seen_pub=0
-for s in "${SERVERS[@]+"${SERVERS[@]}"}"; do
-  if [[ "$s" == "$PUBLIC" ]]; then
-    seen_pub=1
-    break
-  fi
-done
-if [[ "$seen_pub" -eq 0 ]]; then
-  SERVERS+=("$PUBLIC")
-fi
-
 echo "=== queries ==="
-printf '%-16s %-10s %-40s %s\n' "resolver" "status" "answers" "rtt"
+printf '%-16s %-12s %-10s %-32s %s\n' "resolver" "via" "status" "answers" "rtt"
 declare -a ANSWERS=()
 declare -a STATUSES=()
-declare -a LABELS=()
 
-for s in "${SERVERS[@]}"; do
-  label="configured"
-  if [[ "$s" == "$PUBLIC" ]]; then
-    label="public"
-  fi
+for row in "${QUERY_ROWS[@]}"; do
+  via="${row%%$'\t'*}"
+  s="${row#*$'\t'}"
   IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
   # Pad to the header's 10-char status column before coloring; ANSI codes
   # would defeat printf's field width.
   status_pad="$(printf '%-10s' "$status")"
   case "$status" in
-    NOERROR) printf '%-16s %s %-40s %s\n' "$srv" "$(color_status ok "$status_pad")" "$addrs" "$rtt" ;;
-    FAIL)    printf '%-16s %s %-40s %s\n' "$srv" "$(color_status bad "$status_pad")" "$addrs" "$rtt" ;;
-    *)       printf '%-16s %s %-40s %s\n' "$srv" "$(color_status warn "$status_pad")" "$addrs" "$rtt" ;;
+    NOERROR) status_disp="$(color_status ok "$status_pad")" ;;
+    FAIL)    status_disp="$(color_status bad "$status_pad")" ;;
+    *)       status_disp="$(color_status warn "$status_pad")" ;;
   esac
-  LABELS+=("$label")
+  printf '%-16s %-12s %s %-32s %s\n' "$srv" "$via" "$status_disp" "$addrs" "$rtt"
   STATUSES+=("$status")
   ANSWERS+=("$addrs")
 done
@@ -187,6 +247,11 @@ if [[ ${#ok_answers[@]} -ge 2 ]]; then
   done
 fi
 
+if (( BASELINE_SHARED )); then
+  echo
+  warning "baseline ${PUBLIC} is also a configured resolver, so it is not an independent control"
+fi
+
 if (( failed )); then
   verdict "one or more resolvers failed or returned a non-NOERROR status." \
     "Check resolver reachability, captive portals, and local DNS configuration."
@@ -199,12 +264,31 @@ if (( conflict )); then
   finished
   exit 3
 fi
-if [[ ${#CONF[@]} -eq 0 ]]; then
+if (( ${#RESOLVERS[@]} == 0 )); then
   verdict "public resolver succeeded; no configured resolvers were found." \
     "Inspect /etc/resolv.conf or systemd-resolved configuration."
   finished
   exit 2
 fi
-verdict "configured and public resolvers returned consistent NOERROR answers."
+if (( STUB_ONLY )); then
+  verdict "only a local forwarding stub answered; the upstreams it forwards to were not tested." \
+    "A stub agreeing with the baseline proves nothing about its upstreams — query them directly with -p."
+  finished
+  exit 2
+fi
+# Agreement is only evidence when two different servers produced it. One server
+# queried once (or labelled twice) has nothing to agree with.
+if (( ${#QUERY_ROWS[@]} < 2 )); then
+  verdict "only one resolver was available, so there was nothing to compare it against." \
+    "Pass -p with a resolver this system does not use to get an independent baseline."
+  finished
+  exit 2
+fi
+if (( BASELINE_SHARED )); then
+  verdict "${#QUERY_ROWS[@]} configured resolvers agree, but the baseline was not independent of them." \
+    "They cross-check each other; for a true control, re-run with -p set to a resolver the system does not use."
+else
+  verdict "configured and public resolvers returned consistent NOERROR answers."
+fi
 finished
 exit 0

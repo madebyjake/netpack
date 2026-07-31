@@ -145,6 +145,13 @@ check_optional ethtool
 check_optional iw
 echo
 
+tool_header cabletest "needs CAP_NET_ADMIN, and a driver exposing TDR"
+check_cmd ethtool || MISSING=$((MISSING + 1))
+# ethtool being present says nothing about whether this NIC's driver implements
+# the cable test, and that cannot be queried without running it.
+note "cabletest also needs driver support; most desktop/server NICs lack it"
+echo
+
 tool_header segscan "arp-scan needs it; LLDP usually does"
 check_cmd ip || MISSING=$((MISSING + 1))
 check_cmd ping || MISSING=$((MISSING + 1))
@@ -165,8 +172,9 @@ check_cmd ping || MISSING=$((MISSING + 1))
 check_cmd ip || MISSING=$((MISSING + 1))
 echo
 
-tool_header dnscheck
+tool_header dnscheck "resolvectl exposes the real upstreams behind resolved's stub"
 check_cmd dig || MISSING=$((MISSING + 1))
+check_optional resolvectl
 echo
 
 tool_header webcheck

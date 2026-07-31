@@ -1,0 +1,5 @@
+Global:
+Link 2 (eno1): 8.8.8.8 1.1.1.1#cloudflare-dns.com
+Link 3 (enp0s20f0u2u1c2):
+Link 4 (wt0): 100.100.8.136
+Link 5 (tun0): fe80::1%tun0 8.8.8.8

@@ -14,7 +14,7 @@ fi
 # tool list and the menu numbering, so numbers stay stable as long as new tools
 # are appended within their section.
 SECTIONS=(
-  "Segment & link:dhcpprobe linkstat segscan wifiscan discover"
+  "Segment & link:dhcpprobe linkstat cabletest segscan wifiscan discover"
   "Reachability & path:splitloss dnscheck webcheck portcheck mtucheck path3 udp-loss"
   "Streams & capture:mcastcheck ringcap"
   "Throughput — planned tests only:testsrv testcli"
@@ -35,6 +35,20 @@ unset _section _section_tools
 # shellcheck source=../lib/netpack/tools.sh
 if ! source "${BIN_DIR}/../lib/netpack/tools.sh"; then
   echo "error: cannot load ${BIN_DIR}/../lib/netpack/tools.sh" >&2
+  exit 1
+fi
+
+# Guided playbooks. Sourced after tools.sh, whose trim() it reuses.
+# shellcheck source=../lib/netpack/playbooks.sh
+if ! source "${BIN_DIR}/../lib/netpack/playbooks.sh"; then
+  echo "error: cannot load ${BIN_DIR}/../lib/netpack/playbooks.sh" >&2
+  exit 1
+fi
+
+# Menu splash animation. Uses the palette below, which it reads at play time.
+# shellcheck source=../lib/netpack/animate.sh
+if ! source "${BIN_DIR}/../lib/netpack/animate.sh"; then
+  echo "error: cannot load ${BIN_DIR}/../lib/netpack/animate.sh" >&2
   exit 1
 fi
 
@@ -76,6 +90,9 @@ Usage:
   ${me} help            Show this help
   ${me} --version       Print version
   ${me} <tool> [args]   Run a tool (arguments pass through)
+  ${me} playbooks       List guided playbooks
+  ${me} playbook <id>   Run a guided playbook
+  ${me} -o DIR ...      Capture evidence into DIR (menu or single tool)
 
 Also available as: netpack | npk
 
@@ -86,7 +103,8 @@ EOF
   done
   echo
   print_legend
-  cat <<'EOF'
+  # Unquoted: the capture examples below interpolate the invoked name.
+  cat <<EOF
 
 Menu keys:
   N | <tool>           Run by number or by name
@@ -99,7 +117,20 @@ Menu keys:
 Options:
   -h, --help, help     Show this help
   -V, --version        Print version
+  -o, --out DIR        Capture evidence into DIR
   list, ls             List tools
+
+Evidence capture:
+  ${me} -o DIR                 Menu; every run is captured into DIR
+  ${me} -o DIR <tool> [args]   Capture one run
+
+  Each run writes DIR/<tool>-<timestamp>.log (the terminal report, plus stderr,
+  in plain text) and appends a row to DIR/manifest.tsv recording the command,
+  its start and end times, and its exit code. This is how tools without their
+  own --dump still leave evidence; tools that do write JSON still do.
+
+  Only runs started through the launcher are captured. Invoking a tool directly
+  by name bypasses it, so drive an evidence session through ${me}.
 
 Tools are also available directly from this directory when it is on PATH.
 EOF
@@ -110,7 +141,7 @@ print_legend() {
   printf '  %ssudo%s   needs root (auto-elevates)\n' "$C_ROOT" "$C_OFF"
   printf '  %ssudo?%s  better with root (asks at launch)\n' "$C_DIM" "$C_OFF"
   printf '  %sprobe%s  sends light diagnostic traffic\n' "$C_AMBER" "$C_OFF"
-  printf '  %sLOUD%s   heavy traffic or active probing — authorized, planned use only\n' \
+  printf '  %sloud%s   heavy traffic, probing, or link disruption — planned use only\n' \
     "$C_WARN" "$C_OFF"
 }
 
@@ -127,7 +158,7 @@ tool_row() {
   esac
   traffic="${TOOL_TRAFFIC[$name]:-}"
   case "$traffic" in
-    LOUD)  c_traffic=$C_WARN ;;
+    loud)  c_traffic=$C_WARN ;;
     probe) c_traffic=$C_AMBER ;;
   esac
   if [[ -n "$num" ]]; then
@@ -184,6 +215,16 @@ print_context() {
   gw="$(ip -o route show default 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}')" || true
 
+  # SSID on wireless: red "none" when iw confirms no association. Without
+  # iw the association is unmeasured, so nothing is shown.
+  local ssid=''
+  if [[ -n "$iface" && -d "/sys/class/net/${iface}/wireless" ]] \
+      && command -v iw >/dev/null 2>&1; then
+    ssid="$(iw dev "$iface" link 2>/dev/null \
+      | awk -F': ' '/^[[:space:]]*SSID:/ { print $2; exit }')" || true
+    [[ -n "$ssid" ]] || ssid='-'
+  fi
+
   printf '  %slink%s  ' "$C_DIM" "$C_OFF"
   if [[ -n "$iface" ]]; then
     printf '%s%s%s ' "$C_BOLD" "$iface" "$C_OFF"
@@ -191,6 +232,11 @@ print_context() {
       printf '%s' "$addr"
     else
       printf '%sno address%s' "$C_WARN" "$C_OFF"
+    fi
+    if [[ "$ssid" == '-' ]]; then
+      printf '  %sssid%s %snone%s' "$C_DIM" "$C_OFF" "$C_WARN" "$C_OFF"
+    elif [[ -n "$ssid" ]]; then
+      printf '  %sssid%s %s' "$C_DIM" "$C_OFF" "$ssid"
     fi
   else
     printf '%sno interface%s' "$C_WARN" "$C_OFF"
@@ -205,6 +251,11 @@ print_context() {
     printf '  %sroot%s\n' "$C_ROOT" "$C_OFF"
   else
     printf '  %sroot: no%s\n' "$C_DIM" "$C_OFF"
+  fi
+  # Capture is a property of the whole session, so say so on every draw rather
+  # than only at the run that writes a file.
+  if [[ -n "$CAPTURE_DIR" ]]; then
+    printf '  %srec %s%s\n' "$C_OK" "$CAPTURE_DIR" "$C_OFF"
   fi
 }
 
@@ -228,9 +279,11 @@ print_keys() {
   echo
   printf '  %sMenu keys%s\n' "$C_AMBER" "$C_OFF"
   printf '    %-20s %s\n' "N | <tool>" "run by number or by name (e.g. 11, path3)"
+  printf '    %-20s %s\n' "Up/Down" "cycle through the menu entries"
   printf '    %-20s %s\n' "N <args>" "run with arguments, skipping prompts (e.g. 2 -t 30)"
   printf '    %-20s %s\n' "?N | ?<tool>" "show that tool's --help (e.g. ?11)"
   printf '    %-20s %s\n' "d" "doctor — dependency and readiness checks"
+  printf '    %-20s %s\n' "p | p <name>" "guided playbooks for a symptom (e.g. p wan)"
   printf '    %-20s %s\n' "r" "repeat the previous run"
   printf '    %-20s %s\n' "q | Ctrl-D" "quit"
   echo
@@ -249,6 +302,16 @@ build_menu_index() {
     read -r -a section_tools <<<"${section#*:}"
     MENU_TOOLS+=("${section_tools[@]}")
   done
+}
+
+# menu_rule TITLE — amber rule to the banner width (42) around a plain title.
+# Substitution, not substring: a C locale would slice the multibyte dash.
+menu_rule() {
+  local title=$1 fill=''
+  printf -v fill '%*s' "$(( 42 - 4 - ${#title} ))" ''
+  fill=${fill// /─}
+  printf '  %s──%s %s %s%s%s\n' \
+    "$C_AMBER" "$C_OFF" "$title" "$C_AMBER" "$fill" "$C_OFF"
 }
 
 # A non-tool menu row, aligned with the tag columns tool_row uses.
@@ -275,7 +338,7 @@ render_menu() {
       title=${section%%:*}
       read -r -a section_tools <<<"${section#*:}"
       echo
-      printf '  %s%s%s\n' "$C_DIM" "$title" "$C_OFF"
+      menu_rule "$title"
       for name in "${section_tools[@]}"; do
         tool_row "$i" "$name"
         i=$((i + 1))
@@ -289,7 +352,12 @@ render_menu() {
     done
   fi
   echo
+  # The letter rows get a rule of their own; it sheds with the section rules.
+  if (( sections )); then
+    menu_rule "Menu keys"
+  fi
   tool_row d doctor
+  plain_row p playbook "Guided sequences for a symptom"
   if (( ${#LAST_RUN[@]} )); then
     plain_row r repeat "${LAST_RUN[*]}"
   fi
@@ -297,8 +365,12 @@ render_menu() {
   echo
   if (( legend )); then
     print_legend
+    # Emitted inside render_menu so the fit test sheds it with the legend.
+    echo
+    printf '  %s↑↓ select · number or name · ? for keys · q to quit%s\n' \
+      "$C_AMBER" "$C_OFF"
   else
-    printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sLOUD%s planned tests only\n' \
+    printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sloud%s planned tests only\n' \
       "$C_ROOT" "$C_OFF" "$C_DIM" "$C_OFF" "$C_AMBER" "$C_OFF" "$C_WARN" "$C_OFF"
   fi
   echo
@@ -395,6 +467,14 @@ prompt_args() {
   local -a ports=()
   PROMPT_ARGS=()
   case "$name" in
+    cabletest)
+      # The tool refuses without -y, so the menu has to ask for it rather than
+      # launching a run that can only fail. Default is no: this drops the link.
+      ask_choice "Drops the link on this interface while it measures — continue?" \
+        n y n || return 1
+      [[ "$REPLY_VALUE" == "y" ]] || return 1
+      PROMPT_ARGS+=(-y)
+      ;;
     portcheck)
       ask_value "HOST or IP (e.g. 192.168.1.50)" || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")
@@ -419,6 +499,65 @@ prompt_args() {
       PROMPT_ARGS+=("$REPLY_VALUE")
       ;;
   esac
+}
+
+# --- evidence capture --------------------------------------------------------
+
+# When set (npk -o DIR), every run started through the launcher is written to
+# DIR alongside a manifest row. This is how the tools that have no --dump of
+# their own still leave evidence behind: the terminal report is the evidence,
+# so it is retained with the command that produced it and the code it exited.
+CAPTURE_DIR=""
+
+# Manifest columns, tab-separated after a commented header, so a site visit can
+# be read as a timeline by eye or cut into a spreadsheet.
+capture_init() {
+  local manifest="${CAPTURE_DIR}/manifest.tsv"
+  mkdir -p "$CAPTURE_DIR" || {
+    echo "error: cannot create capture directory: ${CAPTURE_DIR}" >&2
+    exit 1
+  }
+  # Evidence can name hosts and topology; keep it owner-only.
+  chmod 700 "$CAPTURE_DIR" 2>/dev/null || true
+  if [[ ! -f "$manifest" ]]; then
+    printf '# netpack capture manifest\n# started\tended\texit\tlog\tcommand\n' >"$manifest"
+  fi
+}
+
+# capture_run NAME CMD... — run CMD with its output teed into the capture
+# directory, then append one manifest row. Returns the tool's exit code.
+#
+# stderr is merged into the log deliberately: the point is an archive of the
+# whole run, so warnings and die() messages belong with the report rather than
+# scrolling past uncaptured. Tools drop colour on their own here because the
+# tee pipeline means stdout is not a TTY, so the log stays plain text.
+capture_run() {
+  local name=$1
+  shift
+  local stamp log manifest rc=0 started ended arg
+  local -a shown=()
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  log="${CAPTURE_DIR}/${name}-${stamp}.log"
+  manifest="${CAPTURE_DIR}/manifest.tsv"
+  # Record the command as it would be retyped ("sudo segscan -i eth0"), not the
+  # resolved bin path — the manifest is meant to be reproducible by a reader.
+  for arg in "$@"; do
+    if [[ "$arg" == "${BIN_DIR}/"* ]]; then
+      shown+=("${arg##*/}")
+    else
+      shown+=("$arg")
+    fi
+  done
+  started="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  set +e
+  "$@" 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  set -e
+  ended="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$started" "$ended" "$rc" "${log##*/}" "${shown[*]}" >>"$manifest"
+  printf '  %scaptured: %s%s\n' "$C_DIM" "$log" "$C_OFF"
+  return "$rc"
 }
 
 tool_path() {
@@ -477,12 +616,17 @@ show_tool_help() {
 
 # Run a tool from the menu: decide sudo, collect missing arguments, echo the
 # equivalent command line, then return to the menu with the exit code explained.
+# Set when the operator backed out of a run at one of its prompts, so the
+# playbook runner can stop the sequence instead of marching to the next step.
+MENU_CANCELLED=0
+
 menu_run() {
   local name=$1
   shift
   local -a args=("$@")
   local -a prefix=()
   local path rc=0 ans
+  MENU_CANCELLED=0
   path="$(tool_path "$name")" || return 0
   echo
 
@@ -494,18 +638,22 @@ menu_run() {
       printf '  %s uses root for full results; run with sudo? [Y/n]: ' "$name"
       if ! read -r ans; then
         echo
+        MENU_CANCELLED=1
         return 0
       fi
       case "$ans" in
         n|N|no|NO) ;;
-        q|Q) return 0 ;;
+        q|Q) MENU_CANCELLED=1; return 0 ;;
         *) prefix=(sudo) ;;
       esac
     fi
   fi
 
   if (( ${#args[@]} == 0 )); then
-    prompt_args "$name" || return 0
+    if ! prompt_args "$name"; then
+      MENU_CANCELLED=1
+      return 0
+    fi
     args=("${PROMPT_ARGS[@]+"${PROMPT_ARGS[@]}"}")
   fi
 
@@ -513,19 +661,24 @@ menu_run() {
   # Echo the equivalent command line: reproducible outside the menu, and it
   # belongs in an evidence timeline.
   printf '  %s$ %s%s\n' "$C_DIM" "${LAST_RUN[*]}" "$C_OFF"
-  # Consequences at the point of action: LOUD tools state what they will do
+  # Consequences at the point of action: loud tools state what they will do
   # to the network before they start doing it.
   local impact
   impact="$(impact_note "$name")"
   if [[ -n "$impact" ]]; then
-    printf '  %sLOUD%s  %s\n' "$C_WARN" "$C_OFF" "$impact"
+    printf '  %sloud%s  %s\n' "$C_WARN" "$C_OFF" "$impact"
   fi
   echo
 
   # Ctrl-C is how ringcap, splitloss and mcastcheck recv are meant to be
   # stopped; ignore it here so stopping the tool returns to the menu.
   trap ':' INT
-  "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
+  if [[ -n "$CAPTURE_DIR" ]]; then
+    capture_run "$name" \
+      "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
+  else
+    "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
+  fi
   trap - INT
 
   echo
@@ -540,10 +693,99 @@ menu_run() {
   pause
 }
 
+# What the next Enter does. The playbook runner overrides this so the prompt
+# after a step offers the next step rather than the menu.
+PAUSE_HINT="Enter for the menu, q to quit"
+
+# --- playbooks ---------------------------------------------------------------
+
+# Numbered list of playbooks, with each one's step count.
+list_playbooks() {
+  local id i=1 steps
+  printf '\n  %sGuided playbooks%s\n' "$C_AMBER" "$C_OFF"
+  printf '  %srun these while the symptom is present%s\n\n' "$C_DIM" "$C_OFF"
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    steps="$(playbook_steps "$id" | wc -l)"
+    printf '  %2s) %s%-10s%s  %s%s (%s steps)%s\n' \
+      "$i" "$C_BOLD" "$id" "$C_OFF" "" "$(playbook_title "$id")" "$steps" "$C_OFF"
+    i=$((i + 1))
+  done
+  printf '\n  %sThroughput and bufferbloat need a second machine running testsrv;\n' "$C_DIM"
+  printf '  those procedures stay in the README.%s\n' "$C_OFF"
+}
+
+# Resolve a number or id to a playbook id; empty on miss.
+resolve_playbook() {
+  local sel=$1 id
+  if [[ "$sel" =~ ^[0-9]+$ ]]; then
+    sel=$((10#$sel))
+    if (( sel >= 1 && sel <= ${#PLAYBOOK_IDS[@]} )); then
+      printf '%s\n' "${PLAYBOOK_IDS[$((sel - 1))]}"
+    fi
+    return 0
+  fi
+  for id in "${PLAYBOOK_IDS[@]}"; do
+    if [[ "$sel" == "$id" ]]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done
+}
+
+# Walk a playbook: state why each step is being run, run it through menu_run
+# (which keeps privilege, prompting, impact notices and capture identical to a
+# hand-picked run), and stop for the operator to read the result between steps.
+run_playbook() {
+  local id=$1
+  local -a steps=() fields=()
+  local line cmd why total i=1 saved_hint=$PAUSE_HINT
+  mapfile -t steps < <(playbook_steps "$id")
+  total=${#steps[@]}
+  if (( total == 0 )); then
+    printf '\n  %sno such playbook: %s%s\n' "$C_WARN" "$id" "$C_OFF"
+    return 0
+  fi
+
+  echo
+  printf '  %s%s%s\n' "$C_AMBER" "$(playbook_title "$id")" "$C_OFF"
+  printf '  %s%d steps — q at any prompt leaves the playbook%s\n' \
+    "$C_DIM" "$total" "$C_OFF"
+
+  for line in "${steps[@]}"; do
+    cmd=${line%%$'\t'*}
+    why=${line#*$'\t'}
+    echo
+    printf '  %s── step %d of %d ──%s\n' "$C_AMBER" "$i" "$total" "$C_OFF"
+    printf '  %s%s%s\n' "$C_BOLD" "$cmd" "$C_OFF"
+    printf '  %s%s%s\n' "$C_DIM" "$why" "$C_OFF"
+    if (( i < total )); then
+      PAUSE_HINT="Enter for step $((i + 1)) of ${total}, q to quit"
+    else
+      PAUSE_HINT="Enter to finish the playbook, q to quit"
+    fi
+    read -r -a fields <<<"$cmd"
+    menu_run "${fields[0]}" "${fields[@]:1}"
+    if (( MENU_CANCELLED )); then
+      PAUSE_HINT=$saved_hint
+      printf '\n  %splaybook stopped at step %d of %d%s\n' \
+        "$C_AMBER" "$i" "$total" "$C_OFF"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+
+  PAUSE_HINT=$saved_hint
+  echo
+  printf '  %splaybook complete: %s%s\n' "$C_OK" "$(playbook_title "$id")" "$C_OFF"
+  if [[ -n "$CAPTURE_DIR" ]]; then
+    printf '  %sevidence in %s%s\n' "$C_DIM" "$CAPTURE_DIR" "$C_OFF"
+  fi
+}
+
 pause() {
   local ans
   echo
-  printf '  %sEnter for the menu, q to quit: %s' "$C_AMBER" "$C_OFF"
+  printf '  %s%s: %s' "$C_AMBER" "$PAUSE_HINT" "$C_OFF"
   if ! read -r ans; then
     echo
     quit
@@ -555,22 +797,91 @@ pause() {
 
 quit() {
   echo
-  printf '%sBye!%s\n' "$C_AMBER" "$C_OFF"
+  printf '%sSee you, space cowboy...%s\n' "$C_AMBER" "$C_OFF"
   exit 0
+}
+
+# Read one line at the menu prompt into MENU_LINE; returns 1 on EOF. On a
+# TTY, Up and Down cycle through the menu entries (tools, then doctor,
+# playbook, quit) and rewrite the line with a word the dispatcher already
+# accepts; typed input behaves as before, including trailing arguments.
+read_menu_line() {
+  MENU_LINE=''
+  if [[ ! -t 0 ]]; then
+    IFS= read -r MENU_LINE || return 1
+    return 0
+  fi
+  local -a cycle=("${MENU_TOOLS[@]}" doctor playbook quit)
+  local n=${#cycle[@]} line='' key seq idx=-1
+  redraw() {
+    printf '\r  %snpk>%s %s\033[K' "$C_AMBER" "$C_OFF" "$line"
+  }
+  while :; do
+    IFS= read -rsn1 key || key=$'\004'
+    case "$key" in
+      $'\033')
+        # Arrows arrive as ESC [ A/B (or ESC O A/B in application mode);
+        # anything else after Escape is swallowed rather than echoed.
+        seq=''
+        IFS= read -rsn2 -t 0.05 seq || true
+        case "$seq" in
+          '[B'|'OB') idx=$(( (idx + 1) % n )) ;;
+          '[A'|'OA')
+            if (( idx < 0 )); then
+              idx=$(( n - 1 ))
+            else
+              idx=$(( (idx - 1 + n) % n ))
+            fi
+            ;;
+          *) continue ;;
+        esac
+        line=${cycle[idx]}
+        redraw
+        ;;
+      ''|$'\n')
+        break
+        ;;
+      $'\004')
+        # Ctrl-D / EOF: quit on an empty line, otherwise submit what's there.
+        [[ -n "$line" ]] || return 1
+        break
+        ;;
+      $'\177'|$'\b')
+        line=${line%?}
+        idx=-1
+        redraw
+        ;;
+      $'\025')
+        # Ctrl-U clears the line, matching the shell reflex.
+        line=''
+        idx=-1
+        redraw
+        ;;
+      *)
+        line+=$key
+        idx=-1
+        printf '%s' "$key"
+        ;;
+    esac
+  done
+  printf '\n'
+  MENU_LINE=$line
 }
 
 menu() {
   local sel name banner=1
   local -a fields=()
   build_menu_index
+  splash_maybe
   while :; do
     draw_menu "$banner"
     banner=0
-    printf '%s  Select (number or name, ? for keys, q to quit): %s' "$C_AMBER" "$C_OFF"
-    if ! read -r sel; then
+    printf '  %snpk>%s ' "$C_AMBER" "$C_OFF"
+    if ! read_menu_line; then
       echo
       quit
     fi
+    sel=$MENU_LINE
     case "$sel" in
       q|Q|quit|QUIT|exit|EXIT|cancel|CANCEL) quit ;;
     esac
@@ -600,6 +911,28 @@ menu() {
           show_tool_help "$name"
         fi
         pause
+        continue
+        ;;
+      p|P|playbook)
+        if (( ${#fields[@]} )); then
+          name="$(resolve_playbook "${fields[0]}")"
+        else
+          list_playbooks
+          printf '\n%s  Playbook (number or name, Enter to go back): %s' "$C_AMBER" "$C_OFF"
+          if ! read -r sel; then
+            echo
+            quit
+          fi
+          [[ -n "$sel" ]] || continue
+          name="$(resolve_playbook "$sel")"
+        fi
+        if [[ -z "$name" ]]; then
+          printf '\n  %sno such playbook: %s%s\n' "$C_WARN" "${fields[0]:-$sel}" "$C_OFF"
+          pause
+        else
+          run_playbook "$name"
+          pause
+        fi
         continue
         ;;
       r|R)
@@ -632,15 +965,37 @@ menu() {
 }
 
 # Direct invocation: exec so the tool's exit code is netpack's exit code.
+# Under capture the run must be survived rather than exec'd, so the manifest
+# row can record how it ended; the exit code is still passed through.
 run_tool() {
   local name=$1
   shift
-  local path
+  local path rc=0
   path="$(tool_path "$name")" || exit 1
+  if [[ -n "$CAPTURE_DIR" ]]; then
+    capture_run "$name" "$path" "$@" || rc=$?
+    exit "$rc"
+  fi
   exec "$path" "$@"
 }
 
 main() {
+  # Global options, which precede the tool name.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--out)
+        if [[ $# -lt 2 || -z "$2" ]]; then
+          echo "error: ${1} requires a directory" >&2
+          exit 1
+        fi
+        CAPTURE_DIR=$2
+        capture_init
+        shift 2
+        ;;
+      *) break ;;
+    esac
+  done
+
   if [[ $# -eq 0 ]]; then
     menu
   fi
@@ -653,6 +1008,36 @@ main() {
       ;;
     list|ls)
       list_tools
+      ;;
+    playbooks)
+      list_playbooks
+      ;;
+    splash)
+      # Preview the menu splash on demand; deliberate, so it ignores the
+      # NETPACK_NO_SPLASH opt-out (splash_play still requires a TTY) and
+      # always includes the satellite flyby that is random in the menu.
+      splash_play satellite
+      ;;
+    playbook)
+      shift
+      if [[ $# -eq 0 ]]; then
+        list_playbooks
+        exit 0
+      fi
+      local pb
+      pb="$(resolve_playbook "$1")"
+      if [[ -z "$pb" ]]; then
+        echo "error: unknown playbook: ${1}" >&2
+        echo "hint: run 'netpack playbooks'" >&2
+        exit 1
+      fi
+      shift
+      if [[ $# -gt 0 ]]; then
+        echo "error: unexpected argument: ${1}" >&2
+        exit 1
+      fi
+      build_menu_index
+      run_playbook "$pb"
       ;;
     *)
       local name=$1

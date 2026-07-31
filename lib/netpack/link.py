@@ -77,6 +77,87 @@ def format_pause(pause: dict[str, str]) -> str | None:
     return text
 
 
+def parse_cable_test(text: str) -> list[dict[str, object]]:
+    """Per-pair results from `ethtool --cable-test IFACE`.
+
+    ethtool reports a code line per pair, and a separate fault-length line only
+    for pairs that failed:
+
+        Pair A code OK
+        Pair C code Open Circuit
+        Pair C, fault length: 25.40m
+
+    Returns one dict per pair in the order first seen, each with 'pair', 'code',
+    and 'fault_length_m' when a distance was reported. Pairs are keyed by name
+    so the two line shapes merge regardless of the order they arrive in.
+    """
+    pairs: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+
+    def slot(name: str) -> dict[str, object]:
+        if name not in pairs:
+            pairs[name] = {"pair": name, "code": ""}
+            order.append(name)
+        return pairs[name]
+
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("Pair "):
+            continue
+        rest = s[len("Pair ") :]
+        if ", fault length:" in rest:
+            name, _, value = rest.partition(", fault length:")
+            value = value.strip().rstrip("m").strip()
+            try:
+                slot(name.strip())["fault_length_m"] = float(value)
+            except ValueError:
+                pass
+        elif " code " in rest:
+            name, _, code = rest.partition(" code ")
+            slot(name.strip())["code"] = code.strip()
+    return [pairs[name] for name in order]
+
+
+def parse_ethtool_driver(text: str) -> str | None:
+    """Driver name from `ethtool -i IFACE`."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("driver:"):
+            return _value_after(s, "driver:") or None
+    return None
+
+
+def cable_test_error(stderr: str) -> str:
+    """Why `ethtool --cable-test` refused: unsupported | permission | unknown.
+
+    The distinction matters because the operator's next step differs. A driver
+    that does not implement cable testing rejects the netlink request outright,
+    which also means the link was never disturbed — worth saying, since the run
+    announced that it would bounce.
+    """
+    low = stderr.lower()
+    if "not supported" in low or "eopnotsupp" in low:
+        return "unsupported"
+    if "not permitted" in low or "operation not permitted" in low or "eperm" in low:
+        return "permission"
+    return "unknown"
+
+
+def cable_is_ok(code: object) -> bool:
+    """True for a pair ethtool reported as good.
+
+    Anything else — Open Circuit, Short within Pair, Short to another pair — is
+    a physical fault. An empty or unrecognized code is not treated as passing:
+    silence about a pair is not evidence that the pair is fine.
+    """
+    return isinstance(code, str) and code.strip().lower() == "ok"
+
+
+def cable_faults(results: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The subset of parse_cable_test rows that are not OK."""
+    return [r for r in results if not cable_is_ok(r.get("code"))]
+
+
 def parse_iw_link(text: str) -> dict[str, str]:
     """Association details from `iw dev IFACE link`."""
     info: dict[str, str] = {}
