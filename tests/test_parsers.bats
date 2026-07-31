@@ -196,11 +196,19 @@ setup() {
   [ "${lines[4]}" = $'aa:bb:cc:00:00:05\t6\t-80.00\twpa\t<hidden>' ]
 }
 
-@test "parse_iw_scan labels 6 GHz by band, keeping it out of the histograms" {
+@test "parse_iw_scan band-prefixes 6 GHz, keeping it out of the numeric histograms" {
   # 6 GHz channel numbers collide with 2.4/5 GHz numbering, so they must not
-  # appear as an integer channel that a histogram would bucket.
+  # appear as a bare integer that the shared histograms would bucket; the 6G:
+  # prefix keeps the channel number while making the row band-distinct.
   run parse_iw_scan "${FIXTURES}/iw_scan.txt"
-  [ "${lines[5]}" = $'aa:bb:cc:00:00:06\t6G\t-60.00\twpa2/3\tSixGig' ]
+  [ "${lines[5]}" = $'aa:bb:cc:00:00:06\t6G:5\t-60.00\twpa2/3\tSixGig' ]
+}
+
+@test "wifi_channel_hist_6g buckets only the 6G-prefixed rows" {
+  parse_iw_scan "${FIXTURES}/iw_scan.txt" > "${BATS_TEST_TMPDIR}/aps.tsv"
+  run wifi_channel_hist_6g "${BATS_TEST_TMPDIR}/aps.tsv"
+  [ "${lines[0]}" = "  ch 5   1" ]
+  [ "${#lines[@]}" -eq 1 ]
 }
 
 @test "wifi_busiest_channel picks the most crowded channel in the band" {

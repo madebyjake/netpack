@@ -104,12 +104,13 @@ fi
 parse_iw_scan "$SCAN" | sort -t "$(printf '\t')" -k3,3 -nr >"$APS" || true
 
 section "access points"
-printf '  %-17s %-4s %-7s %-8s %s\n' "BSSID" "CH" "SIGNAL" "ENC" "SSID"
+# CH is 6 wide for the 6 GHz band-prefixed labels (6G:229).
+printf '  %-17s %-6s %-7s %-8s %s\n' "BSSID" "CH" "SIGNAL" "ENC" "SSID"
 COUNT=0
 while IFS=$'\t' read -r bss ch sig enc ssid; do
   [[ -n "$bss" ]] || continue
   COUNT=$((COUNT + 1))
-  printf '  %-17s %-4s %-7s %-8s %s\n' "$bss" "$ch" "$sig" "$enc" "$ssid"
+  printf '  %-17s %-6s %-7s %-8s %s\n' "$bss" "$ch" "$sig" "$enc" "$ssid"
 done <"$APS"
 [[ "$COUNT" -eq 0 ]] && echo "  (none)"
 
@@ -124,6 +125,13 @@ channel_hist() {
 }
 channel_hist "2.4 GHz" 1 14
 channel_hist "5 GHz" 32 177
+# 6 GHz channels are band-prefixed in the table (their numbers collide with
+# 2.4/5 GHz numbering), so they get a histogram of their own.
+hist6="$(wifi_channel_hist_6g "$APS")"
+if [[ -n "$hist6" ]]; then
+  section "channel usage (6 GHz)"
+  printf '%s\n' "$hist6"
+fi
 
 # Open SSIDs at an event are worth a second look (rogue AP / evil twin).
 opens="$(awk -F'\t' '$4 == "open" { print $5 }' "$APS" | sort -u)"
