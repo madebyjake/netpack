@@ -82,8 +82,22 @@ run_mode() {
   local label=$1
   shift
   local out="${DIR}/${label}.txt"
+  local pid rc=0 t0=$SECONDS
   echo "=== ${label} (${COUNT} probes) ==="
-  if ! mtr -rwb -c "$COUNT" "$@" "$TARGET" | tee "$out"; then
+  # mtr -r prints nothing until it finishes, so run it in the background and
+  # tick elapsed time on stderr; the report itself loses nothing.
+  mtr -rwb -c "$COUNT" "$@" "$TARGET" >"$out" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    pulse "${label}: $((SECONDS - t0))s of ~${COUNT}s"
+    sleep 1
+  done
+  wait "$pid" || rc=$?
+  # SC2119: pulse_done's argument is an optional final message, not wanted here.
+  # shellcheck disable=SC2119
+  pulse_done
+  cat "$out"
+  if (( rc != 0 )); then
     echo "error: mtr ${label} exited non-zero" >&2
     FAILED_MODES=$((FAILED_MODES + 1))
   elif [[ ! -s "$out" ]]; then
