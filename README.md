@@ -227,7 +227,7 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 - `mcastcheck recv` is passive apart from the IGMP join — but the join makes snooping switches forward the group to that port, which is the behavior under test. The default group `239.192.77.77:7788` sits in the RFC 2365 organization-local scope, outside `239.255.0.0/16` (the range Dante allocates media flows from by default). `send` refuses that range without `-y`, since transmitting into a live audio group disrupts it; the guard covers the common default only, so confirm a group is unused before sending. `send` defaults to TTL 1 (local segment only). Probe loss/jitter needs `mcastcheck send` as the source; rate/byte counts work against any flow.
 - `ringcap` requires `-d DIR` and defaults to snaplen 96. Headers may still identify hosts.
 - `segscan` refuses ARP sweeps larger than /22 unless `-y` is passed.
-- `testsrv` only touches nftables sets `inet filter test_tcp` and `test_udp` when those sets exist; they are cleared on EXIT/INT/TERM. `SIGKILL` or power loss skips cleanup — remove the port manually if needed. Non-root runs refuse to guess whether sets exist (nft list needs privileges).
+- `testsrv` only touches nftables sets `inet filter test_tcp` and `test_udp` when those sets exist; they are cleared on EXIT/INT/TERM. `SIGKILL` or power loss skips cleanup — remove the port manually if needed. Non-root runs refuse to guess whether sets exist (nft list needs privileges); `-n` skips firewall handling entirely and needs no root.
 - Use load-generating tools (`path3`, `splitloss`, `udp-loss`, `mtucheck`, `testsrv`, `testcli`) only during planned tests on live networks.
 
 ## Examples
