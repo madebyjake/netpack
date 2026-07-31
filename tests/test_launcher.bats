@@ -152,6 +152,17 @@ closed_port() {
   [ "$(stat -c '%a' "$dir")" = "700" ]
 }
 
+@test "manifest quotes arguments the shell would split" {
+  CAPTURE_DIR="${BATS_TEST_TMPDIR}/capq"
+  capture_init
+  # A recorded `-f port 53` is not retypable; the manifest must quote it.
+  run capture_run demo echo hello 'port 53'
+  [ "$status" -eq 0 ]
+  local row
+  row="$(grep -v '^#' "${CAPTURE_DIR}/manifest.tsv")"
+  [ "$(printf '%s' "$row" | cut -f5)" = "echo hello 'port 53'" ]
+}
+
 @test "-o without a directory is a usage error" {
   run "${REPO}/bin/netpack" -o
   [ "$status" -eq 1 ]

@@ -587,12 +587,16 @@ capture_run() {
   fi
   # Record the command as it would be retyped ("sudo segscan -i eth0"), not the
   # resolved bin path — the manifest is meant to be reproducible by a reader.
+  # Arguments the shell would split or expand are quoted for the same reason:
+  # a BPF filter recorded as `-f port 53` is not retypable.
   for arg in "$@"; do
     if [[ "$arg" == "${BIN_DIR}/"* ]]; then
-      shown+=("${arg##*/}")
-    else
-      shown+=("$arg")
+      arg="${arg##*/}"
     fi
+    if [[ ! "$arg" =~ ^[A-Za-z0-9._:/=@%+,-]+$ ]]; then
+      arg="${arg@Q}"
+    fi
+    shown+=("$arg")
   done
   started="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
   set +e
