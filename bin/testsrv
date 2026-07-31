@@ -8,6 +8,7 @@ source "${ROOT}/lib/netpack.sh"
 
 PORT=5201
 NFT_OPENED=0
+NO_FW=0
 
 usage() {
   cat <<'EOF'
@@ -21,13 +22,16 @@ or abrupt power loss will not run cleanup; remove the port manually if needed:
   sudo nft delete element inet filter test_tcp "{ PORT }"
   sudo nft delete element inet filter test_udp "{ PORT }"
 
-If the sets are absent, no firewall changes are made.
+If the sets are absent, no firewall changes are made. -n skips firewall
+handling entirely — iperf3 itself needs no root, so a non-root run with -n
+works anywhere the port is already reachable.
 
 Usage:
-  testsrv [-p PORT]
+  testsrv [-p PORT] [-n]
 
 Options:
   -p PORT       Listen port (default: 5201)
+  -n            Do not touch nftables sets (no root needed)
   -h, --help    Show this help
 
 Client examples:
@@ -46,9 +50,10 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":p:h" opt; do
+while getopts ":p:nh" opt; do
   case "$opt" in
     p) PORT=$OPTARG ;;
+    n) NO_FW=1 ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -67,12 +72,16 @@ nft_sets_present() {
 }
 
 open_port() {
+  if [[ "$NO_FW" -eq 1 ]]; then
+    echo "firewall: untouched (-n)"
+    return 0
+  fi
   if ! command -v nft >/dev/null 2>&1; then
     warning "nft not found; firewall unchanged" >&2
     return 0
   fi
   if [[ "$(id -u)" -ne 0 ]]; then
-    die "cannot verify nft sets without root; re-run with sudo"
+    die "cannot verify nft sets without root; re-run with sudo, or pass -n to skip firewall handling"
   fi
   if ! nft_sets_present; then
     warning "nft sets inet filter test_tcp/test_udp not found; firewall unchanged" >&2

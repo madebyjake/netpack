@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import cli, report, services
 from netpack.discovery import encode_name, parse_mdns, parse_ssdp
+from netpack.net import NetError, iface_ipv4, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -34,6 +35,9 @@ replies by host. Complements segscan: ARP tells you which addresses are live;
 discover tells you what they claim to be (media servers, TVs, printers,
 cameras, AV gear). IPv4 link-local multicast only; no root required.
 
+Queries leave via the default-route interface unless -i pins them to another —
+on a multi-homed machine the segment under test is often not the default route.
+
 mDNS replies are requested as unicast (QU); responders that only multicast are
 not captured. Best-effort, not exhaustive.
 
@@ -43,9 +47,10 @@ advertising real-time AV transports (Dante, NDI) are also listed on their own,
 since those flows depend on clocking, QoS and multicast handling.
 
 Usage:
-  discover [-t SECONDS] [--dump FILE]
+  discover [-i IFACE] [-t SECONDS] [--dump FILE]
 
 Options:
+  -i, --iface IFACE   Interface to query from (default: default-route iface)
   -t, --timeout SEC   Listen window per protocol (default: 3)
   --dump FILE         Write JSON evidence to FILE
   -h, --help          Show this help
@@ -147,11 +152,12 @@ def print_report(
     ssdp: dict[str, dict[str, Any]],
     mdns: dict[str, set[str]],
     timeout: float,
+    iface_label: str,
     ssdp_err: str = "",
     mdns_err: str = "",
 ) -> None:
     report.header("discover")
-    print(f"window: {timeout:g}s per protocol")
+    print(f"window: {timeout:g}s per protocol  iface: {iface_label}")
 
     report.section(f"SSDP ({len(ssdp)})")
     if ssdp_err:
@@ -214,6 +220,7 @@ def _ip_key(ip: str) -> tuple:
 
 def main(argv: list[str] | None = None) -> int:
     parser = cli.ArgumentParser(prog="discover", add_help=False)
+    parser.add_argument("-i", "--iface")
     parser.add_argument("-t", "--timeout", type=float, default=3.0)
     parser.add_argument("--dump")
     parser.add_argument("-h", "--help", action="store_true")
@@ -227,7 +234,20 @@ def main(argv: list[str] | None = None) -> int:
         print("error: timeout must be positive", file=sys.stderr)
         return EXIT_ERROR
 
-    src_ip = _outbound_ip()
+    if args.iface:
+        try:
+            iface = resolve_iface(args.iface)
+        except NetError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        src_ip = iface_ipv4(iface)
+        if not src_ip:
+            print(f"error: no IPv4 address on {iface}", file=sys.stderr)
+            return EXIT_ERROR
+        iface_label = f"{iface} ({src_ip})"
+    else:
+        src_ip = _outbound_ip()
+        iface_label = "(default route)"
     try:
         ssdp, ssdp_err = ssdp_search(args.timeout, src_ip)
         mdns, mdns_err = mdns_search(args.timeout, src_ip)
@@ -243,12 +263,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_ERROR
 
-    print_report(ssdp, mdns, args.timeout, ssdp_err, mdns_err)
+    print_report(ssdp, mdns, args.timeout, iface_label, ssdp_err, mdns_err)
 
     if args.dump:
         payload = {
             "tool": "discover",
             "timeout_s": args.timeout,
+            "iface": iface_label,
             "ssdp": [
                 {"ip": d["ip"], "server": d["server"], "services": sorted(d["services"])}
                 for d in ssdp.values()

@@ -69,9 +69,16 @@ Each run writes `DIR/<tool>-<timestamp>.log` (the terminal report and its
 stderr, in plain text) and appends a row to `DIR/manifest.tsv` recording the
 command as you would retype it, its start and end times, and its exit code. The
 directory is created mode 700. This is how the tools without their own `--dump`
-still leave evidence behind; tools that write JSON still do so as well.
+still leave evidence behind; tools that have `--dump` also write
+`DIR/<tool>-<timestamp>.json` automatically (an explicit `--dump` path wins).
 
 The menu shows `rec <dir>` in its status line while capture is active.
+
+Privilege note: logs are written by the launcher, so a menu session run as your
+user keeps them yours even when a tool is elevated — but that elevated tool
+writes its JSON dump as root, and running the launcher itself under sudo makes
+the whole directory root-owned. Keep one capture directory to one privilege
+level, or `chown -R` it afterwards.
 
 Capture covers runs started through the launcher — `npk <tool>`, the menu, and
 playbooks. A tool invoked directly by name (`dhcpprobe -i eth0`, with `bin/` on
@@ -210,8 +217,9 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
   loudly instead of quietly testing the default target.
 - Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
 - JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`), and `mcastcheck send` records `interrupted`.
-- JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `discover`, `mcastcheck`). Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
+- JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `cabletest`, `discover`, `mcastcheck`); under `-o DIR` capture those tools dump into the capture directory automatically. Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.
+- `discover` sends its queries via the default-route interface; on a multi-homed machine the segment under test is often not the default route, so pass `-i` to pin it (for example `discover -i eth0`).
 - `discover` requests unicast mDNS replies (QU); responders that only multicast are not captured, so it is best-effort, not an exhaustive inventory.
 - `discover` labels known mDNS service types (Dante, NDI, AirPlay, printers, …) and lists real-time AV advertisers separately. Unrecognized types print verbatim. Vendor service names change between product generations, so treat a label as convenience, not authority.
 - `linkstat` reports Energy Efficient Ethernet and flow-control state on wired links. EEE lets the PHY enter low-power idle between frames, adding wake latency and jitter; it is a known cause of clock instability for Dante/AES67 and PTP, and of jitter for VoIP. Disable it on ports carrying those streams. These are settings rather than counters, so they never affect the exit code.
@@ -227,7 +235,7 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 - `mcastcheck recv` is passive apart from the IGMP join — but the join makes snooping switches forward the group to that port, which is the behavior under test. The default group `239.192.77.77:7788` sits in the RFC 2365 organization-local scope, outside `239.255.0.0/16` (the range Dante allocates media flows from by default). `send` refuses that range without `-y`, since transmitting into a live audio group disrupts it; the guard covers the common default only, so confirm a group is unused before sending. `send` defaults to TTL 1 (local segment only). Probe loss/jitter needs `mcastcheck send` as the source; rate/byte counts work against any flow.
 - `ringcap` requires `-d DIR` and defaults to snaplen 96. Headers may still identify hosts.
 - `segscan` refuses ARP sweeps larger than /22 unless `-y` is passed.
-- `testsrv` only touches nftables sets `inet filter test_tcp` and `test_udp` when those sets exist; they are cleared on EXIT/INT/TERM. `SIGKILL` or power loss skips cleanup — remove the port manually if needed. Non-root runs refuse to guess whether sets exist (nft list needs privileges).
+- `testsrv` only touches nftables sets `inet filter test_tcp` and `test_udp` when those sets exist; they are cleared on EXIT/INT/TERM. `SIGKILL` or power loss skips cleanup — remove the port manually if needed. Non-root runs refuse to guess whether sets exist (nft list needs privileges); `-n` skips firewall handling entirely and needs no root.
 - Use load-generating tools (`path3`, `splitloss`, `udp-loss`, `mtucheck`, `testsrv`, `testcli`) only during planned tests on live networks.
 
 ## Examples

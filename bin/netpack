@@ -127,7 +127,8 @@ Evidence capture:
   Each run writes DIR/<tool>-<timestamp>.log (the terminal report, plus stderr,
   in plain text) and appends a row to DIR/manifest.tsv recording the command,
   its start and end times, and its exit code. This is how tools without their
-  own --dump still leave evidence; tools that do write JSON still do.
+  own --dump still leave evidence; tools that have --dump also write
+  DIR/<tool>-<timestamp>.json automatically (an explicit --dump path wins).
 
   Only runs started through the launcher are captured. Invoking a tool directly
   by name bypasses it, so drive an evidence session through ${me}.
@@ -293,6 +294,7 @@ print_keys() {
 
 MENU_TOOLS=()   # menu number (1-based) -> tool name
 LAST_RUN=()     # most recent menu invocation: [sudo] tool args...
+MENU_INT=0      # set by the menu-scope INT trap; read_menu_line clears the line
 
 build_menu_index() {
   local section
@@ -475,6 +477,26 @@ prompt_args() {
       [[ "$REPLY_VALUE" == "y" ]] || return 1
       PROMPT_ARGS+=(-y)
       ;;
+    segscan)
+      # Mirror segscan's own /22 sweep guard: with no arguments it will use the
+      # default-route interface, so the -y question can be asked here instead
+      # of surfacing as an exit 1 mid-playbook.
+      local iface prefix hosts
+      iface="$(ip -o route get 1.1.1.1 2>/dev/null \
+        | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')" || true
+      prefix=""
+      if [[ -n "$iface" ]]; then
+        prefix="$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null \
+          | awk 'NR == 1 { split($4, a, "/"); print a[2] }')" || true
+      fi
+      if [[ "$prefix" =~ ^[0-9]+$ ]] && (( prefix < 22 )); then
+        hosts=$((1 << (32 - prefix)))
+        ask_choice "ARP sweep of /${prefix} (~${hosts} addresses) can disrupt a live segment — continue?" \
+          n y n || return 1
+        [[ "$REPLY_VALUE" == "y" ]] || return 1
+        PROMPT_ARGS+=(-y)
+      fi
+      ;;
     portcheck)
       ask_value "HOST or IP (e.g. 192.168.1.50)" || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")
@@ -497,6 +519,13 @@ prompt_args() {
     mcastcheck)
       ask_choice "Mode — recv listens, send transmits probes" recv recv send || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")
+      # Group and port are what a Dante/NDI check must get right; testing the
+      # pair-test default against a production flow is a misleading negative.
+      ask_value "GROUP (production flows: from Dante Controller / the NDI sender)" \
+        "239.192.77.77" || return 1
+      PROMPT_ARGS+=(-g "$REPLY_VALUE")
+      ask_value "PORT" "7788" || return 1
+      PROMPT_ARGS+=(-p "$REPLY_VALUE")
       ;;
   esac
 }
@@ -531,6 +560,11 @@ capture_init() {
 # whole run, so warnings and die() messages belong with the report rather than
 # scrolling past uncaptured. Tools drop colour on their own here because the
 # tee pipeline means stdout is not a TTY, so the log stays plain text.
+#
+# tee runs with -i: Ctrl-C is the normal stop for ringcap, splitloss and
+# mcastcheck recv, and the summary those tools print after the interrupt is
+# the evidence. A default-disposition tee dies with the SIGINT and takes that
+# summary (and the tool's real exit code) with it.
 capture_run() {
   local name=$1
   shift
@@ -539,18 +573,34 @@ capture_run() {
   stamp="$(date +%Y%m%d-%H%M%S)"
   log="${CAPTURE_DIR}/${name}-${stamp}.log"
   manifest="${CAPTURE_DIR}/manifest.tsv"
+  # JSON-capable tools dump into the capture directory as well, so the evidence
+  # folder is complete without the operator naming a --dump path per run. An
+  # explicit --dump in the arguments wins.
+  local has_dump=0
+  for arg in "$@"; do
+    if [[ "$arg" == --dump || "$arg" == --dump=* ]]; then
+      has_dump=1
+    fi
+  done
+  if supports_dump "$name" && (( ! has_dump )); then
+    set -- "$@" --dump "${CAPTURE_DIR}/${name}-${stamp}.json"
+  fi
   # Record the command as it would be retyped ("sudo segscan -i eth0"), not the
   # resolved bin path — the manifest is meant to be reproducible by a reader.
+  # Arguments the shell would split or expand are quoted for the same reason:
+  # a BPF filter recorded as `-f port 53` is not retypable.
   for arg in "$@"; do
     if [[ "$arg" == "${BIN_DIR}/"* ]]; then
-      shown+=("${arg##*/}")
-    else
-      shown+=("$arg")
+      arg="${arg##*/}"
     fi
+    if [[ ! "$arg" =~ ^[A-Za-z0-9._:/=@%+,-]+$ ]]; then
+      arg="${arg@Q}"
+    fi
+    shown+=("$arg")
   done
   started="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
   set +e
-  "$@" 2>&1 | tee "$log"
+  "$@" 2>&1 | tee -i "$log"
   rc=${PIPESTATUS[0]}
   set -e
   ended="$(date +%Y-%m-%dT%H:%M:%S%z | sed -E 's/([0-9]{2})([0-9]{2})$/\1:\2/')"
@@ -671,7 +721,9 @@ menu_run() {
   echo
 
   # Ctrl-C is how ringcap, splitloss and mcastcheck recv are meant to be
-  # stopped; ignore it here so stopping the tool returns to the menu.
+  # stopped; ignore it here so stopping the tool returns to the menu. The
+  # menu-scope trap is restored afterwards, not cleared: the prompts that
+  # follow rely on it to survive a Ctrl-C.
   trap ':' INT
   if [[ -n "$CAPTURE_DIR" ]]; then
     capture_run "$name" \
@@ -679,7 +731,7 @@ menu_run() {
   else
     "${prefix[@]+"${prefix[@]}"}" "$path" "${args[@]+"${args[@]}"}" || rc=$?
   fi
-  trap - INT
+  trap 'MENU_INT=1' INT
 
   echo
   if (( rc == 0 )); then
@@ -807,17 +859,37 @@ quit() {
 # accepts; typed input behaves as before, including trailing arguments.
 read_menu_line() {
   MENU_LINE=''
+  MENU_INT=0
   if [[ ! -t 0 ]]; then
     IFS= read -r MENU_LINE || return 1
     return 0
   fi
   local -a cycle=("${MENU_TOOLS[@]}" doctor playbook quit)
-  local n=${#cycle[@]} line='' key seq idx=-1
+  local n=${#cycle[@]} line='' key seq tail rc idx=-1
   redraw() {
     printf '\r  %snpk>%s %s\033[K' "$C_AMBER" "$C_OFF" "$line"
   }
   while :; do
-    IFS= read -rsn1 key || key=$'\004'
+    # The timeout is a polling tick, not a deadline: bash restarts a read that
+    # a trapped signal interrupted, so the MENU_INT flag Ctrl-C sets would
+    # otherwise go unseen until the next keypress. Each tick checks it.
+    rc=0
+    IFS= read -rsn1 -t 0.5 key || rc=$?
+    if (( rc != 0 )); then
+      if (( MENU_INT )); then
+        # Ctrl-C clears the line and re-prompts, matching the shell reflex;
+        # quitting stays on q / Ctrl-D.
+        MENU_INT=0
+        line=''
+        idx=-1
+        redraw
+        continue
+      fi
+      if (( rc > 128 )); then
+        continue
+      fi
+      key=$'\004'
+    fi
     case "$key" in
       $'\033')
         # Arrows arrive as ESC [ A/B (or ESC O A/B in application mode);
@@ -832,6 +904,14 @@ read_menu_line() {
             else
               idx=$(( (idx - 1 + n) % n ))
             fi
+            ;;
+          '['[0-9])
+            # CSI with parameters (Delete = ESC [ 3 ~, F5 = ESC [ 1 5 ~ …):
+            # consume through the final byte so no stray ~ lands in the line.
+            while IFS= read -rsn1 -t 0.05 tail; do
+              case "$tail" in [a-zA-Z~]) break ;; esac
+            done
+            continue
             ;;
           *) continue ;;
         esac
@@ -872,6 +952,10 @@ menu() {
   local sel name banner=1
   local -a fields=()
   build_menu_index
+  # Menu-scope Ctrl-C: sets a flag the prompt loop reads (clear the line) and
+  # makes every other read in the menu fail like EOF, which each prompt already
+  # handles as cancel-or-quit — instead of killing the launcher mid-read.
+  trap 'MENU_INT=1' INT
   splash_maybe
   while :; do
     draw_menu "$banner"
@@ -973,7 +1057,11 @@ run_tool() {
   local path rc=0
   path="$(tool_path "$name")" || exit 1
   if [[ -n "$CAPTURE_DIR" ]]; then
+    # Survive the Ctrl-C that stops the tool, so the manifest row still
+    # records how the run ended.
+    trap ':' INT
     capture_run "$name" "$path" "$@" || rc=$?
+    trap - INT
     exit "$rc"
   fi
   exec "$path" "$@"

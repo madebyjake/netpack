@@ -139,6 +139,26 @@ is_stub_addr() {
   [[ "${1:-}" =~ ^127\. || "${1:-}" == "::1" ]]
 }
 
+# True for a record type dnscheck can meaningfully query: a common mnemonic or
+# the RFC 3597 TYPEn form (n <= 65535). dig silently falls back to A for a
+# token it does not recognize, so an unvalidated typo would query the wrong
+# type, match no answers, and read as a clean comparison of empty answer sets.
+# Expects the caller to have uppercased the input.
+is_dns_rrtype() {
+  local t=${1:-}
+  case "$t" in
+    A|AAAA|ANY|CAA|CNAME|DNSKEY|DS|HINFO|HTTPS|MX|NAPTR|NS|NSEC|PTR|RRSIG|SOA|SPF|SRV|SSHFP|SVCB|TLSA|TXT)
+      return 0
+      ;;
+    TYPE[0-9]*)
+      [[ "${t#TYPE}" =~ ^[0-9]+$ ]] && (( 10#${t#TYPE} <= 65535 ))
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # Read "key<TAB>value" rows on stdin and drop rows whose value was already seen,
 # keeping the first occurrence (and so its key). Order is preserved.
 dedupe_by_value() {
@@ -192,13 +212,16 @@ arp_duplicates() {
 
 # One "bssid<TAB>channel<TAB>signal<TAB>encryption<TAB>ssid" row per BSS in an
 # `iw dev IFACE scan` report. Channel is derived from the frequency; 6 GHz
-# reports as the band name "6G" because its channel numbers collide with the
-# 2.4/5 GHz numbering, which would corrupt the per-channel histograms.
+# reports with a "6G:" prefix (6G:5 for 5975 MHz) because its channel numbers
+# collide with the 2.4/5 GHz numbering, which would corrupt the shared numeric
+# histograms; wifi_channel_hist_6g reads the prefixed rows on their own.
 parse_iw_scan() {
   awk '
     function chan(f) {
       if (f == 2484) return 14
       if (f >= 2412 && f <= 2472) return (f - 2407) / 5
+      if (f == 5935) return "6G:2"
+      if (f >= 5955 && f <= 7115) return "6G:" (f - 5950) / 5
       if (f >= 5925) return "6G"
       if (f >= 5000) return (f - 5000) / 5
       return "?"
@@ -249,6 +272,15 @@ wifi_channel_hist() {
     $2 ~ /^[0-9]+$/ && $2 >= lo && $2 <= hi { c[$2]++ }
     END { for (ch = lo; ch <= hi; ch++) if (c[ch]) printf "  ch %-3s %d\n", ch, c[ch] }
   ' "$file"
+}
+
+# "  ch N count" lines for every occupied 6 GHz channel, ascending. Reads the
+# 6G:-prefixed rows the numeric histograms exclude (channels 1-233).
+wifi_channel_hist_6g() {
+  awk -F'\t' '
+    $2 ~ /^6G:[0-9]+$/ { sub(/^6G:/, "", $2); c[$2 + 0]++ }
+    END { for (ch = 1; ch <= 233; ch++) if (c[ch]) printf "  ch %-3s %d\n", ch, c[ch] }
+  ' "$1"
 }
 
 # --- webcheck -----------------------------------------------------------------

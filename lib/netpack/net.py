@@ -38,6 +38,14 @@ def validate_iface(iface: str) -> str:
     return iface
 
 
+def is_wireless(iface: str) -> bool:
+    """True for Wi-Fi interfaces. The prefix check covers drivers that do not
+    populate /sys/class/net/*/wireless (some USB adapters)."""
+    return Path(f"/sys/class/net/{iface}/wireless").is_dir() or iface.startswith(
+        ("wlan", "wlp", "wlx")
+    )
+
+
 def iface_is_up(iface: str) -> bool:
     """Return True if the interface is usable (operstate up, or unknown with IFF_UP)."""
     flags_path = Path(f"/sys/class/net/{iface}/flags")

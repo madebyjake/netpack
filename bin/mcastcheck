@@ -60,6 +60,9 @@ forwarding path is exactly what is under test.
 
 send transmits sequence-numbered probe datagrams to GROUP:PORT. Default TTL 1
 keeps probes on the local L2 segment; raise -T only for routed multicast.
+At the defaults send is light (~80 kbit/s); pushed toward the limits
+(-r 5000 -s 1472 is ~59 Mbit/s of multicast) it is a load generator — treat
+that as a planned test.
 
 Pair workflow (one-way delivery proof, like testsrv/testcli):
   receiving side:  mcastcheck recv

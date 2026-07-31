@@ -79,9 +79,11 @@ probe_port() {
   local host=$1 port=$2
   local err rc=0 t0 t1 ms=""
   t0="${EPOCHREALTIME:-}"
+  # LC_ALL=C: the case below classifies bash's English error strings, which a
+  # localized bash would otherwise translate into the generic FAIL bucket.
   # $0/$1 belong to the inner bash -c, not this shell
   # shellcheck disable=SC2016
-  err="$(timeout "$TIMEOUT" bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "$port" 2>&1)" || rc=$?
+  err="$(LC_ALL=C timeout "$TIMEOUT" bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "$port" 2>&1)" || rc=$?
   t1="${EPOCHREALTIME:-}"
   if [[ -n "$t0" && -n "$t1" ]]; then
     ms="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.0fms", (b - a) * 1000 }')"
