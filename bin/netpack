@@ -215,17 +215,14 @@ print_context() {
   gw="$(ip -o route show default 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}')" || true
 
-  # On wireless, which network matters as much as which interface. Not being
-  # associated is itself evidence, so that renders in red like a missing
-  # address; wired interfaces say nothing.
+  # SSID on wireless: red "none" when iw confirms no association. Without
+  # iw the association is unmeasured, so nothing is shown.
   local ssid=''
-  if [[ -n "$iface" && -d "/sys/class/net/${iface}/wireless" ]]; then
-    ssid='-'
-    if command -v iw >/dev/null 2>&1; then
-      ssid="$(iw dev "$iface" link 2>/dev/null \
-        | awk -F': ' '/^[[:space:]]*SSID:/ { print $2; exit }')" || true
-      [[ -n "$ssid" ]] || ssid='-'
-    fi
+  if [[ -n "$iface" && -d "/sys/class/net/${iface}/wireless" ]] \
+      && command -v iw >/dev/null 2>&1; then
+    ssid="$(iw dev "$iface" link 2>/dev/null \
+      | awk -F': ' '/^[[:space:]]*SSID:/ { print $2; exit }')" || true
+    [[ -n "$ssid" ]] || ssid='-'
   fi
 
   printf '  %slink%s  ' "$C_DIM" "$C_OFF"
@@ -282,6 +279,7 @@ print_keys() {
   echo
   printf '  %sMenu keys%s\n' "$C_AMBER" "$C_OFF"
   printf '    %-20s %s\n' "N | <tool>" "run by number or by name (e.g. 11, path3)"
+  printf '    %-20s %s\n' "Up/Down" "cycle through the menu entries"
   printf '    %-20s %s\n' "N <args>" "run with arguments, skipping prompts (e.g. 2 -t 30)"
   printf '    %-20s %s\n' "?N | ?<tool>" "show that tool's --help (e.g. ?11)"
   printf '    %-20s %s\n' "d" "doctor — dependency and readiness checks"
