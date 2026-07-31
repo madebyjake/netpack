@@ -203,7 +203,7 @@ term_rows() {
 # plus privilege state. Never fatal — a missing piece is itself evidence, so it
 # renders in red instead of aborting the menu.
 print_context() {
-  local iface='' addr='' gw=''
+  local iface='' addr='' gw='' others=''
   iface="$(ip -o route get 1.1.1.1 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')" || true
   if [[ -z "$iface" ]]; then
@@ -252,6 +252,14 @@ print_context() {
     printf '  %sroot%s\n' "$C_ROOT" "$C_OFF"
   else
     printf '  %sroot: no%s\n' "$C_DIM" "$C_OFF"
+  fi
+  # Other interfaces holding global IPv4 addresses: on a multi-homed box the
+  # link line above is only one of the stories, so name the rest.
+  others="$(ip -o -4 addr show scope global 2>/dev/null \
+    | awk -v skip="$iface" '$2 != skip && $3 == "inet" \
+        { printf "%s%s %s", (n++ ? "  " : ""), $2, $4 }')" || true
+  if [[ -n "$others" ]]; then
+    printf '  %salso%s  %s\n' "$C_DIM" "$C_OFF" "$others"
   fi
   # Capture is a property of the whole session, so say so on every draw rather
   # than only at the run that writes a file.
