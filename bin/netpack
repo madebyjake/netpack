@@ -476,6 +476,26 @@ prompt_args() {
       [[ "$REPLY_VALUE" == "y" ]] || return 1
       PROMPT_ARGS+=(-y)
       ;;
+    segscan)
+      # Mirror segscan's own /22 sweep guard: with no arguments it will use the
+      # default-route interface, so the -y question can be asked here instead
+      # of surfacing as an exit 1 mid-playbook.
+      local iface prefix hosts
+      iface="$(ip -o route get 1.1.1.1 2>/dev/null \
+        | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')" || true
+      prefix=""
+      if [[ -n "$iface" ]]; then
+        prefix="$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null \
+          | awk 'NR == 1 { split($4, a, "/"); print a[2] }')" || true
+      fi
+      if [[ "$prefix" =~ ^[0-9]+$ ]] && (( prefix < 22 )); then
+        hosts=$((1 << (32 - prefix)))
+        ask_choice "ARP sweep of /${prefix} (~${hosts} addresses) can disrupt a live segment — continue?" \
+          n y n || return 1
+        [[ "$REPLY_VALUE" == "y" ]] || return 1
+        PROMPT_ARGS+=(-y)
+      fi
+      ;;
     portcheck)
       ask_value "HOST or IP (e.g. 192.168.1.50)" || return 1
       PROMPT_ARGS+=("$REPLY_VALUE")
