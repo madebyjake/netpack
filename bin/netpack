@@ -215,6 +215,19 @@ print_context() {
   gw="$(ip -o route show default 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}')" || true
 
+  # On wireless, which network matters as much as which interface. Not being
+  # associated is itself evidence, so that renders in red like a missing
+  # address; wired interfaces say nothing.
+  local ssid=''
+  if [[ -n "$iface" && -d "/sys/class/net/${iface}/wireless" ]]; then
+    ssid='-'
+    if command -v iw >/dev/null 2>&1; then
+      ssid="$(iw dev "$iface" link 2>/dev/null \
+        | awk -F': ' '/^[[:space:]]*SSID:/ { print $2; exit }')" || true
+      [[ -n "$ssid" ]] || ssid='-'
+    fi
+  fi
+
   printf '  %slink%s  ' "$C_DIM" "$C_OFF"
   if [[ -n "$iface" ]]; then
     printf '%s%s%s ' "$C_BOLD" "$iface" "$C_OFF"
@@ -222,6 +235,11 @@ print_context() {
       printf '%s' "$addr"
     else
       printf '%sno address%s' "$C_WARN" "$C_OFF"
+    fi
+    if [[ "$ssid" == '-' ]]; then
+      printf '  %sssid%s %snone%s' "$C_DIM" "$C_OFF" "$C_WARN" "$C_OFF"
+    elif [[ -n "$ssid" ]]; then
+      printf '  %sssid%s %s' "$C_DIM" "$C_OFF" "$ssid"
     fi
   else
     printf '%sno interface%s' "$C_WARN" "$C_OFF"
