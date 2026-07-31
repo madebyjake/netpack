@@ -45,6 +45,13 @@ if ! source "${BIN_DIR}/../lib/netpack/playbooks.sh"; then
   exit 1
 fi
 
+# Menu splash animation. Uses the palette below, which it reads at play time.
+# shellcheck source=../lib/netpack/animate.sh
+if ! source "${BIN_DIR}/../lib/netpack/animate.sh"; then
+  echo "error: cannot load ${BIN_DIR}/../lib/netpack/animate.sh" >&2
+  exit 1
+fi
+
 # Snapshot any inherited LINES up front: bash's checkwinsize can rewrite it
 # between commands, which would make the menu layout flicker between draws.
 NP_LINES=${LINES:-}
@@ -764,6 +771,7 @@ menu() {
   local sel name banner=1
   local -a fields=()
   build_menu_index
+  splash_maybe
   while :; do
     draw_menu "$banner"
     banner=0
@@ -901,6 +909,12 @@ main() {
       ;;
     playbooks)
       list_playbooks
+      ;;
+    splash)
+      # Preview the menu splash on demand; deliberate, so it ignores the
+      # NETPACK_NO_SPLASH opt-out (splash_play still requires a TTY) and
+      # always includes the satellite flyby that is random in the menu.
+      splash_play satellite
       ;;
     playbook)
       shift

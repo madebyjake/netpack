@@ -51,6 +51,10 @@ Tools are also invocable directly (`dhcpprobe`, `linkstat`, …). Use `-h` / `--
 
 When you pick a root-requiring tool from the menu without being root, the menu invokes sudo for you (tools where root is optional ask first). Direct invocation never adds sudo.
 
+The menu opens with a short launch animation; any key skips it, and
+`NETPACK_NO_SPLASH=1` disables it entirely (`npk splash` replays it on demand).
+Neither ever appears in piped output or captured evidence.
+
 ### Evidence capture
 
 `-o DIR` records every run started through the launcher — one run or a whole
