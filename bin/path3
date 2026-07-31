@@ -69,7 +69,9 @@ require_uint port "$PORT" 1 65535
 require_cmd mtr awk
 
 header path3
-echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}"
+VIA="$(via_for "$TARGET")"
+echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}${VIA:+  via: ${VIA}}"
+multihomed_note "$VIA"
 echo
 
 DIR="$(private_tmpdir path3)"

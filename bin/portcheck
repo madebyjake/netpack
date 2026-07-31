@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 TIMEOUT=3
 
@@ -118,7 +120,9 @@ probe_port() {
 }
 
 header portcheck
-echo "host: ${HOST}  ports: ${PORTS[*]}  timeout: ${TIMEOUT}s"
+VIA="$(via_for "$HOST")"
+echo "host: ${HOST}  ports: ${PORTS[*]}  timeout: ${TIMEOUT}s${VIA:+  via: ${VIA}}"
+multihomed_note "$VIA"
 echo
 echo "=== probes ==="
 for p in "${PORTS[@]}"; do

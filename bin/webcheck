@@ -157,6 +157,7 @@ probe_tls() {
 
 header webcheck
 echo "timeout: ${TIMEOUT}s per request  (plain HTTP by design; redirects not followed)"
+multihomed_note ""
 echo
 echo "=== probes ==="
 probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""

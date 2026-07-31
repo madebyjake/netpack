@@ -199,6 +199,10 @@ if is_configured "$PUBLIC"; then
   BASELINE_SHARED=1
 fi
 
+# The resolver rows above are already labeled per link; this names the egress
+# for the queries themselves on a multi-homed box.
+multihomed_note "$(via_for "$PUBLIC")"
+
 QUERY_ROWS=("${RESOLVERS[@]+"${RESOLVERS[@]}"}")
 if (( ! BASELINE_SHARED )); then
   QUERY_ROWS+=("public"$'\t'"$PUBLIC")

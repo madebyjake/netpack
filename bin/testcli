@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/netpack.sh
 source "${ROOT}/lib/netpack.sh"
+# shellcheck source=../lib/netpack/parsers.sh
+source "${ROOT}/lib/netpack/parsers.sh"
 
 PORT=5201
 DURATION=30
@@ -109,7 +111,9 @@ if (( STREAMS > 1 )); then
 fi
 
 header testcli
-echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s  direction: ${DIRECTION}"
+VIA="$(via_for "$HOST")"
+echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s  direction: ${DIRECTION}${VIA:+  via: ${VIA}}"
+multihomed_note "$VIA"
 if [[ "$UDP" -eq 1 ]]; then
   echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}  streams ${STREAMS}"
   warning "generates significant traffic"

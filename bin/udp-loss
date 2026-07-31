@@ -71,7 +71,9 @@ if [[ ${#SERVERS[@]} -eq 0 ]]; then
 fi
 
 header udp-loss
-echo "count: ${COUNT}  servers: ${SERVERS[*]}  name: ${NAME}"
+VIA="$(via_for "${SERVERS[0]}")"
+echo "count: ${COUNT}  servers: ${SERVERS[*]}  name: ${NAME}${VIA:+  via: ${VIA}}"
+multihomed_note "$VIA"
 echo
 
 declare -a LOSS_PCTS=()
