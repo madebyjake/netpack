@@ -141,7 +141,7 @@ print_legend() {
   printf '  %ssudo%s   needs root (auto-elevates)\n' "$C_ROOT" "$C_OFF"
   printf '  %ssudo?%s  better with root (asks at launch)\n' "$C_DIM" "$C_OFF"
   printf '  %sprobe%s  sends light diagnostic traffic\n' "$C_AMBER" "$C_OFF"
-  printf '  %sLOUD%s   heavy traffic, probing, or link disruption — planned use only\n' \
+  printf '  %sloud%s   heavy traffic, probing, or link disruption — planned use only\n' \
     "$C_WARN" "$C_OFF"
 }
 
@@ -158,7 +158,7 @@ tool_row() {
   esac
   traffic="${TOOL_TRAFFIC[$name]:-}"
   case "$traffic" in
-    LOUD)  c_traffic=$C_WARN ;;
+    loud)  c_traffic=$C_WARN ;;
     probe) c_traffic=$C_AMBER ;;
   esac
   if [[ -n "$num" ]]; then
@@ -336,7 +336,7 @@ render_menu() {
   if (( legend )); then
     print_legend
   else
-    printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sLOUD%s planned tests only\n' \
+    printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sloud%s planned tests only\n' \
       "$C_ROOT" "$C_OFF" "$C_DIM" "$C_OFF" "$C_AMBER" "$C_OFF" "$C_WARN" "$C_OFF"
   fi
   echo
@@ -627,12 +627,12 @@ menu_run() {
   # Echo the equivalent command line: reproducible outside the menu, and it
   # belongs in an evidence timeline.
   printf '  %s$ %s%s\n' "$C_DIM" "${LAST_RUN[*]}" "$C_OFF"
-  # Consequences at the point of action: LOUD tools state what they will do
+  # Consequences at the point of action: loud tools state what they will do
   # to the network before they start doing it.
   local impact
   impact="$(impact_note "$name")"
   if [[ -n "$impact" ]]; then
-    printf '  %sLOUD%s  %s\n' "$C_WARN" "$C_OFF" "$impact"
+    printf '  %sloud%s  %s\n' "$C_WARN" "$C_OFF" "$impact"
   fi
   echo
 

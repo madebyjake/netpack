@@ -164,7 +164,7 @@ Saturating the venue uplink disrupts everything on it — planned tests only.
 
 Root and traffic columns use the same tags as `npk list` and the menu:
 `sudo` needs root (the menu auto-elevates), `sudo?` is better with root (the menu
-asks), `probe` sends light diagnostic traffic, `LOUD` is heavy traffic, active
+asks), `probe` sends light diagnostic traffic, `loud` is heavy traffic, active
 probing, or link disruption — authorized, planned use only. A blank cell is
 passive or read-only.
 
@@ -173,8 +173,8 @@ passive or read-only.
 | `doctor` | Check dependencies and readiness | | |
 | `dhcpprobe` | List DHCP servers on the segment (DISCOVER only) | `sudo` | `probe` |
 | `linkstat` | Sample link counters; physical vs congestion | | |
-| `cabletest` | TDR cable test: per-pair faults and distance | `sudo` | `LOUD` |
-| `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | `sudo?` | `LOUD` |
+| `cabletest` | TDR cable test: per-pair faults and distance | `sudo` | `loud` |
+| `segscan` | Interface, LLDP, gateway, ARP sweep, duplicate IPs | `sudo?` | `loud` |
 | `wifiscan` | Nearby Wi-Fi APs, signal, channel congestion | `sudo` | `probe` |
 | `discover` | SSDP/mDNS service discovery on the segment | | `probe` |
 | `splitloss` | Concurrent gateway vs WAN loss, rtt, loss timeline | | `probe` |
@@ -182,12 +182,12 @@ passive or read-only.
 | `webcheck` | Captive portal / HTTP + TLS interception check; clock skew | | `probe` |
 | `portcheck` | TCP service reachability by port | | `probe` |
 | `mtucheck` | Path MTU probe to gateway and WAN | | `probe` |
-| `path3` | mtr over ICMP, UDP, and TCP | `sudo?` | `LOUD` |
+| `path3` | mtr over ICMP, UDP, and TCP | `sudo?` | `loud` |
 | `udp-loss` | UDP delivery via DNS queries with replies | | `probe` |
 | `mcastcheck` | Multicast group delivery (AV, IPTV, sACN, Dante/NDI) | | `probe` |
 | `ringcap` | Rotating pcap ring (headers by default) | `sudo` | |
-| `testsrv` | iperf3 server; optional nft set open/close | `sudo?` | `LOUD` |
-| `testcli` | iperf3 client companion to `testsrv` | | `LOUD` |
+| `testsrv` | iperf3 server; optional nft set open/close | `sudo?` | `loud` |
+| `testcli` | iperf3 client companion to `testsrv` | | `loud` |
 
 `segscan` and `path3` run without root but lose their main evidence (the ARP
 sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
@@ -217,7 +217,7 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 - `linkstat` reports Energy Efficient Ethernet and flow-control state on wired links. EEE lets the PHY enter low-power idle between frames, adding wake latency and jitter; it is a known cause of clock instability for Dante/AES67 and PTP, and of jitter for VoIP. Disable it on ports carrying those streams. These are settings rather than counters, so they never affect the exit code.
 - `dnscheck` takes its resolver list from `resolvectl dns` when systemd-resolved is running, because `/etc/resolv.conf` on those systems holds only the `127.0.0.53` stub, and testing the stub proves nothing about the upstreams it forwards to. Without resolved, `resolv.conf` is used directly. If only a loopback stub can be identified, the run says so and exits 2 rather than reporting clean.
 - `dnscheck`'s baseline defaults to the first of `1.1.1.1`, `9.9.9.9`, `8.8.8.8`, `208.67.222.222` that the system is not already using, so the control is independent by construction — a fixed default would compare a configured resolver against itself on any host that forwards to it, and agreement with itself is not evidence. An explicit `-p` is honoured as given; if it turns out to be configured too, the run warns and says so in the assessment, and exits 2 only when there was no second distinct resolver to compare against at all.
-- `cabletest` runs ethtool's TDR cable test, reporting each pair as OK or faulted with the approximate distance to the break — the direct answer to "is the cable bad, and where", for when `linkstat` shows physical-layer growth or carrier flaps. It carries `LOUD` for disruption rather than traffic: the PHY drops the link to measure, so the port goes down for the duration. It requires root and `-y`, and the menu asks before running it.
+- `cabletest` runs ethtool's TDR cable test, reporting each pair as OK or faulted with the approximate distance to the break — the direct answer to "is the cable bad, and where", for when `linkstat` shows physical-layer growth or carrier flaps. It carries `loud` for disruption rather than traffic: the PHY drops the link to measure, so the port goes down for the duration. It requires root and `-y`, and the menu asks before running it.
 - `cabletest` depends on the NIC driver exposing TDR, and most desktop and server NICs do not — `e1000e`, `igb` and `r8169` all reject the request, so it will not work against a typical workstation's onboard port. Support is common on embedded and switch PHYs. A driver that cannot run the test quotes ethtool's own message, names the driver, and exits 1 rather than reporting a pass; a rejected request never disturbs the link, and the report says so.
 - `webcheck` fetches public connectivity endpoints over plain HTTP by design (portals intercept HTTP) and never follows redirects; the redirect target is the evidence. Its final HTTPS probe validates the chain against the system trust store (untrusted chain = TLS interception) and its clock line compares the local clock with the HTTP Date header.
 - `dhcpprobe` does not complete DORA by default (no REQUEST/ACK) and does not bind a lease. `--full` completes DORA against the first offer and immediately RELEASEs; it briefly binds an address and appears in server lease logs.

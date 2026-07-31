@@ -113,7 +113,7 @@ uses `lib/netpack.sh`, Python uses `netpack.report`; keep the two in step.
 **Colour.** Only when stdout is a TTY and `NO_COLOR` is unset, so redirected
 evidence stays plain text.
 
-**Safety.** Tools that generate meaningful load carry the `LOUD` tag and an
+**Safety.** Tools that generate meaningful load carry the `loud` tag and an
 impact line. Anything that could disrupt production traffic must be guarded in
 code, not just documented — see `mcastcheck send` refusing Dante's default
 media range without `-y`, and `segscan` refusing sweeps larger than /22
