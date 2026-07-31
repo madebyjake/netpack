@@ -40,8 +40,8 @@ Usage:
 
 Options:
   -n NAME              Query name (default: cloudflare.com)
-  -p PUBLIC_RESOLVER   Public resolver for baseline (default: 1.1.1.1)
-  -t TYPE              Record type (default: A)
+  -p PUBLIC_RESOLVER   Public resolver for baseline (default: auto-chosen; see below)
+  -t TYPE              Record type: mnemonic or TYPEn (default: A)
   -h, --help           Show this help
 
 Note: names with geo or round-robin answers (CDNs) can differ legitimately
@@ -82,6 +82,9 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 TYPE="${TYPE^^}"  # dig prints record types uppercase
+if ! is_dns_rrtype "$TYPE"; then
+  die "invalid record type: ${TYPE} (use a mnemonic like A, AAAA, MX, TXT, or TYPEn)"
+fi
 
 require_cmd dig awk sort
 

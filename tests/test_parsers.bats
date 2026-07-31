@@ -104,6 +104,31 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "is_dns_rrtype accepts mnemonics and the TYPEn form" {
+  run is_dns_rrtype A
+  [ "$status" -eq 0 ]
+  run is_dns_rrtype TXT
+  [ "$status" -eq 0 ]
+  run is_dns_rrtype TYPE65280
+  [ "$status" -eq 0 ]
+}
+
+@test "is_dns_rrtype rejects tokens dig would silently query as A" {
+  # dig falls back to querying A for an unknown type token, so a typo must be
+  # a usage error here rather than a clean comparison of empty answer sets.
+  run is_dns_rrtype BOGUS
+  [ "$status" -ne 0 ]
+  run is_dns_rrtype TYPE70000
+  [ "$status" -ne 0 ]
+  run is_dns_rrtype TYPE
+  [ "$status" -ne 0 ]
+  run is_dns_rrtype ""
+  [ "$status" -ne 0 ]
+  # dnscheck uppercases before validating; lowercase reaching here is a bug.
+  run is_dns_rrtype a
+  [ "$status" -ne 0 ]
+}
+
 @test "dedupe_by_value keeps the first row per server" {
   output="$(printf 'eno1\t8.8.8.8\nwt0\t8.8.8.8\nwt0\t9.9.9.9\n' | dedupe_by_value)"
   [ "$output" = $'eno1\t8.8.8.8\nwt0\t9.9.9.9' ]
