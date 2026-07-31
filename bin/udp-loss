@@ -94,10 +94,10 @@ for srv in "${SERVERS[@]}"; do
     fi
     i=$((i + 1))
     if (( i % 25 == 0 || i == COUNT )); then
-      printf '\r%s' "$(progress "${srv}: ${i}/${COUNT}")" >&2
+      pulse "${srv}: ${i}/${COUNT}"
     fi
   done
-  printf '\r%s\n' "$(progress "${srv}: ${COUNT}/${COUNT} done")" >&2
+  pulse_done "${srv}: ${COUNT}/${COUNT} done"
 
   loss="$(awk -v f="$fail" -v c="$COUNT" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
   LOSS_PCTS+=("$loss")

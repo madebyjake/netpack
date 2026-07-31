@@ -3,7 +3,7 @@
 #
 # Every column the menu renders comes from TOOL_ROWS in bin/netpack. These tests
 # guard the drift that a per-column lookup table invites: a tool added to a
-# section but never given a description or tag, or a LOUD tool shipped without
+# section but never given a description or tag, or a loud tool shipped without
 # the consequence line the operator sees before it touches the network.
 
 setup() {
@@ -52,18 +52,18 @@ closed_port() {
       *) echo "bad root tag for $t: ${TOOL_ROOT[$t]}"; return 1 ;;
     esac
     case "${TOOL_TRAFFIC[$t]:-}" in
-      ''|probe|LOUD) ;;
+      ''|probe|loud) ;;
       *) echo "bad traffic tag for $t: ${TOOL_TRAFFIC[$t]}"; return 1 ;;
     esac
   done
 }
 
-@test "LOUD tools carry a consequence line, quiet tools do not" {
+@test "loud tools carry a consequence line, quiet tools do not" {
   for t in "${TOOLS[@]}"; do
-    if [ "${TOOL_TRAFFIC[$t]:-}" = "LOUD" ]; then
-      [ -n "${TOOL_IMPACT[$t]:-}" ] || { echo "LOUD without impact note: $t"; return 1; }
+    if [ "${TOOL_TRAFFIC[$t]:-}" = "loud" ]; then
+      [ -n "${TOOL_IMPACT[$t]:-}" ] || { echo "loud without impact note: $t"; return 1; }
     else
-      [ -z "${TOOL_IMPACT[$t]:-}" ] || { echo "impact note on non-LOUD tool: $t"; return 1; }
+      [ -z "${TOOL_IMPACT[$t]:-}" ] || { echo "impact note on non-loud tool: $t"; return 1; }
     fi
   done
 }
