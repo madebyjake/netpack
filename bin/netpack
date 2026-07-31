@@ -215,6 +215,19 @@ print_context() {
   gw="$(ip -o route show default 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit }}')" || true
 
+  # On wireless, which network matters as much as which interface. Not being
+  # associated is itself evidence, so that renders in red like a missing
+  # address; wired interfaces say nothing.
+  local ssid=''
+  if [[ -n "$iface" && -d "/sys/class/net/${iface}/wireless" ]]; then
+    ssid='-'
+    if command -v iw >/dev/null 2>&1; then
+      ssid="$(iw dev "$iface" link 2>/dev/null \
+        | awk -F': ' '/^[[:space:]]*SSID:/ { print $2; exit }')" || true
+      [[ -n "$ssid" ]] || ssid='-'
+    fi
+  fi
+
   printf '  %slink%s  ' "$C_DIM" "$C_OFF"
   if [[ -n "$iface" ]]; then
     printf '%s%s%s ' "$C_BOLD" "$iface" "$C_OFF"
@@ -222,6 +235,11 @@ print_context() {
       printf '%s' "$addr"
     else
       printf '%sno address%s' "$C_WARN" "$C_OFF"
+    fi
+    if [[ "$ssid" == '-' ]]; then
+      printf '  %sssid%s %snone%s' "$C_DIM" "$C_OFF" "$C_WARN" "$C_OFF"
+    elif [[ -n "$ssid" ]]; then
+      printf '  %sssid%s %s' "$C_DIM" "$C_OFF" "$ssid"
     fi
   else
     printf '%sno interface%s' "$C_WARN" "$C_OFF"
@@ -312,7 +330,14 @@ render_menu() {
       title=${section%%:*}
       read -r -a section_tools <<<"${section#*:}"
       echo
-      printf '  %s%s%s\n' "$C_DIM" "$title" "$C_OFF"
+      # Rule out to the banner width (42), amber around the plain title.
+      # Built by substitution rather than substring so a C locale cannot
+      # slice the multibyte dash mid-character.
+      local fill=''
+      printf -v fill '%*s' "$(( 42 - 4 - ${#title} ))" ''
+      fill=${fill// /─}
+      printf '  %s──%s %s %s%s%s\n' \
+        "$C_AMBER" "$C_OFF" "$title" "$C_AMBER" "$fill" "$C_OFF"
       for name in "${section_tools[@]}"; do
         tool_row "$i" "$name"
         i=$((i + 1))
@@ -335,6 +360,12 @@ render_menu() {
   echo
   if (( legend )); then
     print_legend
+    # The prompt itself is terse; this hint carries what it no longer says.
+    # Amber and adjacent so prompt and hint read as one unit. Emitted here so
+    # draw_menu's fit test sheds it with the full legend.
+    echo
+    printf '  %s↑↓ select · number or name · ? for keys · q to quit%s\n' \
+      "$C_AMBER" "$C_OFF"
   else
     printf '  %ssudo%s root   %ssudo?%s asks   %sprobe%s light traffic   %sloud%s planned tests only\n' \
       "$C_ROOT" "$C_OFF" "$C_DIM" "$C_OFF" "$C_AMBER" "$C_OFF" "$C_WARN" "$C_OFF"
@@ -767,6 +798,73 @@ quit() {
   exit 0
 }
 
+# Read one line at the menu prompt into MENU_LINE; returns 1 on EOF. On a
+# TTY, Up and Down cycle through the menu entries (tools, then doctor,
+# playbook, quit) and rewrite the line with a word the dispatcher already
+# accepts; typed input behaves as before, including trailing arguments.
+read_menu_line() {
+  MENU_LINE=''
+  if [[ ! -t 0 ]]; then
+    IFS= read -r MENU_LINE || return 1
+    return 0
+  fi
+  local -a cycle=("${MENU_TOOLS[@]}" doctor playbook quit)
+  local n=${#cycle[@]} line='' key seq idx=-1
+  redraw() {
+    printf '\r  %snpk>%s %s\033[K' "$C_AMBER" "$C_OFF" "$line"
+  }
+  while :; do
+    IFS= read -rsn1 key || key=$'\004'
+    case "$key" in
+      $'\033')
+        # Arrows arrive as ESC [ A/B (or ESC O A/B in application mode);
+        # anything else after Escape is swallowed rather than echoed.
+        seq=''
+        IFS= read -rsn2 -t 0.05 seq || true
+        case "$seq" in
+          '[B'|'OB') idx=$(( (idx + 1) % n )) ;;
+          '[A'|'OA')
+            if (( idx < 0 )); then
+              idx=$(( n - 1 ))
+            else
+              idx=$(( (idx - 1 + n) % n ))
+            fi
+            ;;
+          *) continue ;;
+        esac
+        line=${cycle[idx]}
+        redraw
+        ;;
+      ''|$'\n')
+        break
+        ;;
+      $'\004')
+        # Ctrl-D / EOF: quit on an empty line, otherwise submit what's there.
+        [[ -n "$line" ]] || return 1
+        break
+        ;;
+      $'\177'|$'\b')
+        line=${line%?}
+        idx=-1
+        redraw
+        ;;
+      $'\025')
+        # Ctrl-U clears the line, matching the shell reflex.
+        line=''
+        idx=-1
+        redraw
+        ;;
+      *)
+        line+=$key
+        idx=-1
+        printf '%s' "$key"
+        ;;
+    esac
+  done
+  printf '\n'
+  MENU_LINE=$line
+}
+
 menu() {
   local sel name banner=1
   local -a fields=()
@@ -775,11 +873,12 @@ menu() {
   while :; do
     draw_menu "$banner"
     banner=0
-    printf '%s  Select (number or name, ? for keys, q to quit): %s' "$C_AMBER" "$C_OFF"
-    if ! read -r sel; then
+    printf '  %snpk>%s ' "$C_AMBER" "$C_OFF"
+    if ! read_menu_line; then
       echo
       quit
     fi
+    sel=$MENU_LINE
     case "$sel" in
       q|Q|quit|QUIT|exit|EXIT|cancel|CANCEL) quit ;;
     esac
