@@ -210,6 +210,23 @@ closed_port() {
   done
 }
 
+@test "the playbook list prints an unpadded step count" {
+  # BSD wc pads its count to 8 columns, which landed inside the parens as
+  # "(       4 steps)". GNU wc does not, so this only shows on a BSD userland.
+  run env NO_COLOR=1 "${REPO}/bin/netpack" playbooks
+  [ "$status" -eq 0 ]
+  local seen=0 line
+  while IFS= read -r line; do
+    case "$line" in
+      *" steps)"*)
+        seen=$((seen + 1))
+        [[ "$line" =~ \([0-9]+\ steps\) ]] || { echo "padded: [$line]"; return 1; }
+        ;;
+    esac
+  done <<<"$output"
+  [ "$seen" -ge 4 ]
+}
+
 @test "resolve_playbook accepts a number or a name" {
   run resolve_playbook 1
   [ "$output" = "${PLAYBOOK_IDS[0]}" ]
