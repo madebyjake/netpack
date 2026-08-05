@@ -226,6 +226,46 @@ ASSESSMENT: both targets were clean." ]
 
 # --- JSON evidence ------------------------------------------------------------
 
+@test "take_dump_opt pulls --dump out in both spellings" {
+  take_dump_opt -t 3 --dump /tmp/a.json host 80
+  [ "$DUMP_PATH" = "/tmp/a.json" ]
+  [ "${NP_ARGS[*]}" = "-t 3 host 80" ]
+  take_dump_opt -t 3 --dump=/tmp/b.json host 80
+  [ "$DUMP_PATH" = "/tmp/b.json" ]
+  [ "${NP_ARGS[*]}" = "-t 3 host 80" ]
+}
+
+@test "take_dump_opt leaves an untouched argument list alone" {
+  take_dump_opt -t 3 host 80 443
+  [ -z "$DUMP_PATH" ]
+  [ "${NP_ARGS[*]}" = "-t 3 host 80 443" ]
+  take_dump_opt
+  [ -z "$DUMP_PATH" ]
+  [ "${#NP_ARGS[@]}" -eq 0 ]
+}
+
+@test "take_dump_opt rejects --dump without a path" {
+  run take_dump_opt -t 3 --dump
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--dump requires a path"* ]]
+  run take_dump_opt --dump=
+  [ "$status" -ne 0 ]
+}
+
+@test "dump_opt_str writes null for an undetermined value" {
+  # An unknown egress interface is not the same as an empty one.
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_opt_str via ""
+  dump_opt_str iface eth0
+  dump_write "$out" portcheck 0 >/dev/null
+  run python3 -c "
+import json
+d = json.load(open('${out}'))
+print(d['via'] is None, d['iface'])"
+  [ "$output" = "True eth0" ]
+}
+
 @test "dump_write produces the required keys" {
   local out="${STUB_DIR}/d.json"
   dump_begin

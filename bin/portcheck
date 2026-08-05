@@ -35,10 +35,11 @@ interface the connect went out on; to test another uplink, run from a host on
 it, or use a policy route.
 
 Usage:
-  portcheck [-t SECONDS] HOST PORT [PORT...]
+  portcheck [-t SECONDS] [--dump FILE] HOST PORT [PORT...]
 
 Options:
   -t SECONDS    Per-port connect timeout (default: 3)
+  --dump FILE   Write JSON evidence to FILE
   -h, --help    Show this help
 
 Exit codes:
@@ -52,6 +53,9 @@ if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":t:h" opt; do
   case "$opt" in
@@ -99,11 +103,13 @@ probe_port() {
 
   if (( rc == 0 )); then
     printf '  port %-5s  %s  %s\n' "$port" "$(color_status ok "OPEN   ")" "$ms"
+    dump_row ports "n:port=${port}" "s:state=open" "n:connect_ms=${ms%ms}"
     return 0
   fi
   FAILED=$((FAILED + 1))
   if (( rc == 124 )); then
     printf '  port %-5s  %s\n' "$port" "$(color_status bad "TIMEOUT (filtered or host down)")"
+    dump_row ports "n:port=${port}" "s:state=timeout" "n:connect_ms="
     return 0
   fi
   local low=${err,,}
@@ -111,20 +117,25 @@ probe_port() {
     *"connection refused"*)
       printf '  port %-5s  %s\n' "$port" \
         "$(color_status warn "REFUSED (host up, port closed)")"
+      dump_row ports "n:port=${port}" "s:state=refused" "n:connect_ms="
       ;;
     *"name or service not known"*|*"temporary failure in name resolution"*|*"nodename nor servname"*)
       printf '  port %-5s  %s\n' "$port" "$(color_status bad "DNS FAIL (name did not resolve)")"
+      dump_row ports "n:port=${port}" "s:state=dns_fail" "n:connect_ms="
       ;;
     *"no route to host"*|*"network is unreachable"*)
       printf '  port %-5s  %s\n' "$port" "$(color_status bad "UNREACHABLE (no route)")"
+      dump_row ports "n:port=${port}" "s:state=unreachable" "n:connect_ms="
       ;;
     *)
       # Strip bash's "bash: line N:" noise; keep the useful tail.
       printf '  port %-5s  %s\n' "$port" "$(color_status bad "FAIL (${err##*: })")"
+      dump_row ports "n:port=${port}" "s:state=fail" "n:connect_ms="
       ;;
   esac
 }
 
+dump_begin
 header portcheck
 VIA="$(via_for "$HOST")"
 echo "host: ${HOST}  ports: ${PORTS[*]}  timeout: ${TIMEOUT}s${VIA:+  via: ${VIA}}"
@@ -136,11 +147,21 @@ for p in "${PORTS[@]}"; do
 done
 
 if (( FAILED == 0 )); then
+  CODE=0
   verdict "all ${#PORTS[@]} port(s) connected."
-  finished
-  exit 0
+else
+  CODE=2
+  verdict "${FAILED} of ${#PORTS[@]} port(s) did not connect." \
+    "REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host."
 fi
-verdict "${FAILED} of ${#PORTS[@]} port(s) did not connect." \
-  "REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host."
+
+if [[ -n "$DUMP_PATH" ]]; then
+  dump_str host "$HOST"
+  dump_opt_str via "$VIA"
+  dump_num timeout_s "$TIMEOUT"
+  dump_num ports_failed "$FAILED"
+  dump_num ports_total "${#PORTS[@]}"
+  dump_write "$DUMP_PATH" portcheck "$CODE" || true
+fi
 finished
-exit 2
+exit "$CODE"

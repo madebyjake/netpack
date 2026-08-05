@@ -41,11 +41,12 @@ run needs a policy route (ip rule) steering IFACE's address out that uplink;
 without one it exits 1 rather than reporting rp_filter drops as interception.
 
 Usage:
-  webcheck [-i IFACE] [-t SECONDS]
+  webcheck [-i IFACE] [-t SECONDS] [--dump FILE]
 
 Options:
   -i IFACE      Bind fetches to IFACE (multi-homed)
   -t SECONDS    Per-request timeout (default: 5)
+  --dump FILE   Write JSON evidence to FILE
   -h, --help    Show this help
 
 Exit codes:
@@ -60,6 +61,9 @@ if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":i:t:h" opt; do
   case "$opt" in
@@ -114,12 +118,18 @@ probe() {
       -w '%{http_code}\t%{redirect_url}' "$url")"; then
     echo "  $(color_status bad "no response (connect failure, DNS failure, or timeout)")"
     FAILED=$((FAILED + 1))
+    dump_row probes "s:url=${url}" "s:scheme=http" "s:result=no_response" \
+      "n:status=" "S:redirect=" "S:issuer="
     return
   fi
   capture_skew
   IFS=$'\t' read -r status redirect <<<"$out"
   got_body="$(tr -d '[:space:]' < "$body")"
-  case "$(classify_http_probe "$status" "$want_status" "$got_body" "$want_body" "$redirect")" in
+  local result
+  result="$(classify_http_probe "$status" "$want_status" "$got_body" "$want_body" "$redirect")"
+  dump_row probes "s:url=${url}" "s:scheme=http" "s:result=${result}" \
+    "n:status=${status}" "S:redirect=${redirect}" "S:issuer="
+  case "$result" in
     ok)
       echo "  status ${status}  $(color_status ok)"
       return
@@ -147,6 +157,8 @@ probe_tls() {
       -o "$body" -D "${DIR}/headers" \
       -w '%{http_code}' "$url" 2>"$verr")" || rc=$?
   issuer="$(grep -m1 -i 'issuer:' "$verr" | sed -e 's/^\*[[:space:]]*//' || true)"
+  # The terminal line prints the label; the dump carries just the DN.
+  local issuer_dn="${issuer#*: }"
   if (( rc == 0 )); then
     capture_skew
   fi
@@ -154,19 +166,27 @@ probe_tls() {
     echo "  $(color_status bad "certificate not trusted by system store — TLS interception suspected")"
     [[ -n "$issuer" ]] && echo "  ${issuer}"
     UNEXPECTED=$((UNEXPECTED + 1))
+    dump_row probes "s:url=${url}" "s:scheme=https" "s:result=untrusted_chain" \
+      "n:status=" "S:redirect=" "S:issuer=${issuer_dn}"
     return
   fi
   if (( rc != 0 )); then
     echo "  $(color_status bad "no TLS response (curl exit ${rc}; connect failure, block, or timeout)")"
     FAILED=$((FAILED + 1))
+    dump_row probes "s:url=${url}" "s:scheme=https" "s:result=no_response" \
+      "n:status=" "S:redirect=" "S:issuer=${issuer_dn}"
     return
   fi
   got_body="$(tr -d '[:space:]' < "$body")"
   if [[ "$out" == "$want_status" && "$got_body" == "$want_body" ]]; then
     echo "  status ${out}  $(color_status ok)"
+    dump_row probes "s:url=${url}" "s:scheme=https" "s:result=ok" \
+      "n:status=${out}" "S:redirect=" "S:issuer=${issuer_dn}"
   else
     echo "  status ${out}  $(color_status warn "UNEXPECTED (expected ${want_status})")"
     UNEXPECTED=$((UNEXPECTED + 1))
+    dump_row probes "s:url=${url}" "s:scheme=https" "s:result=unexpected" \
+      "n:status=${out}" "S:redirect=" "S:issuer=${issuer_dn}"
   fi
   # Not `[[ ]] &&` — as the last command it would set the function's return
   # status to 1 when no issuer was captured, and set -e would abort the report.
@@ -175,6 +195,7 @@ probe_tls() {
   fi
 }
 
+dump_begin
 header webcheck
 echo "timeout: ${TIMEOUT}s per request  (plain HTTP by design; redirects not followed)"
 if [[ -n "$IFACE" ]]; then
@@ -203,17 +224,25 @@ if [[ -n "$SKEW_S" ]]; then
 fi
 
 if (( UNEXPECTED > 0 )); then
+  CODE=3
   verdict "unexpected HTTP/TLS response(s); captive portal or interception suspected." \
     "Open the redirect target (or any http:// site) in a browser; an untrusted TLS chain means a security appliance is rewriting HTTPS."
-  finished
-  exit 3
-fi
-if (( FAILED > 0 )); then
+elif (( FAILED > 0 )); then
+  CODE=2
   verdict "no response from ${FAILED} endpoint(s) (HTTP or HTTPS)." \
     "If splitloss and dnscheck are clean, suspect HTTP/S-specific filtering or a proxy requirement."
-  finished
-  exit 2
+else
+  CODE=0
+  verdict "connectivity endpoints returned expected responses; no portal indicated."
 fi
-verdict "connectivity endpoints returned expected responses; no portal indicated."
+
+if [[ -n "$DUMP_PATH" ]]; then
+  dump_num timeout_s "$TIMEOUT"
+  dump_opt_str iface "$IFACE"
+  dump_num clock_skew_s "$SKEW_S"
+  dump_num unexpected "$UNEXPECTED"
+  dump_num failed "$FAILED"
+  dump_write "$DUMP_PATH" webcheck "$CODE" || true
+fi
 finished
-exit 0
+exit "$CODE"
