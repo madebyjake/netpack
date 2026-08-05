@@ -175,6 +175,27 @@ state the fact, not the rationale around it.
 ## Releasing
 
 The version lives in `lib/netpack/__init__.py` and nowhere else; the launcher
-and `lib/netpack.sh` both read it from there. Bump it, then tag with the bare
-version (`x.x.x`), matching the existing tags. Release notes are kept in the
-GitHub release for the tag.
+and `lib/netpack.sh` both read it from there.
+
+Work lands on `dev`. A release branches from `dev`, stabilizes there, and merges
+into `main`:
+
+1. Bump the version on `dev` as `chore(version): bump version to X.Y.Z`.
+2. Branch `release/X.Y.Z` from `dev` and push it.
+3. Fix release blockers on that branch. No features — they continue on `dev`,
+   which stays open.
+4. PR `release/X.Y.Z` into `main` and merge.
+5. Tag `main` with the bare version (`0.8.0`, no `v` prefix).
+6. If the release branch carried commits of its own, merge it back into `dev`.
+   Otherwise those fixes exist only on `main`, and `dev` ships without them.
+7. Publish a GitHub release on the tag, named `netpack-vX.Y.Z-beta`, marked
+   pre-release until 1.0.0. Notes live there; there is no CHANGELOG file.
+
+The tag goes on `main` after the merge, not on the bump commit, so it names
+exactly what shipped even when the release branch carried fixes.
+
+Urgent fixes to a released version branch `hotfix/<description>` from `main` and
+merge into both `main` and `dev`.
+
+Tags before 0.8.0 point at the bump commit and use the `release-X.Y.Z` branch
+form; both predate this and are not precedent.
