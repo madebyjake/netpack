@@ -64,6 +64,9 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 require_uint count "$COUNT" 1
+# Normalize to base 10: a validated "0100" is 100, but the query loop below
+# would read the leading zero as octal and send 64 queries.
+COUNT=$((10#$COUNT))
 require_cmd dig awk sort
 
 if [[ ${#SERVERS[@]} -eq 0 ]]; then

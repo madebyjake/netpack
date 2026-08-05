@@ -62,6 +62,9 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 require_uint "max size" "$MAX" 100
+# Normalize to base 10: a validated "0100" is 100, but bash arithmetic would
+# read the leading zero as octal.
+MAX=$((10#$MAX))
 require_cmd ping ip awk
 
 PING_BIND=()

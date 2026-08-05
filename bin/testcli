@@ -85,6 +85,9 @@ require_uint port "$PORT" 1 65535
 require_uint duration "$DURATION" 1
 require_uint length "$LENGTH" 1
 require_uint streams "$STREAMS" 1 128
+# Normalize to base 10: bash arithmetic below would read a validated "08" as
+# octal and abort the run with a raw arithmetic error.
+STREAMS=$((10#$STREAMS))
 
 # Reject UDP-only options in TCP mode rather than dropping them silently: a
 # rate the operator believes they set, but that iperf3 never received, makes
