@@ -164,8 +164,7 @@ chore/document-commit-conventions
 ```
 
 One logical change per branch: a `chore:` commit does not belong on a `bugfix/`
-branch. Branches created before this was adopted (`feat/menu-polish`,
-`release-0.7.0`) do not match and are not precedent.
+branch.
 
 Do not add `Co-Authored-By` or other trailers.
 
@@ -197,5 +196,5 @@ exactly what shipped even when the release branch carried fixes.
 Urgent fixes to a released version branch `hotfix/<description>` from `main` and
 merge into both `main` and `dev`.
 
-Tags before 0.8.0 point at the bump commit and use the `release-X.Y.Z` branch
-form; both predate this and are not precedent.
+Tags before 0.8.0 point at the bump commit rather than at `main`; that predates
+this flow and is not precedent.
