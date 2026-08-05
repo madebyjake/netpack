@@ -11,6 +11,7 @@ source "${ROOT}/lib/netpack/parsers.sh"
 COUNT=100
 NAME="cloudflare.com"
 SERVERS=()
+IFACE=""
 
 usage() {
   cat <<'EOF'
@@ -20,10 +21,16 @@ Counts a query as successful when a UDP reply is received (including error
 responses such as SERVFAIL/REFUSED). This distinguishes datagram delivery from
 ICMP port-unreachable rate limiting seen in mtr -u final-hop loss.
 
+On a multi-homed machine, -i binds the queries to IFACE's address so a chosen
+uplink is measured instead of the default route's. Every server is off-link, so
+the run needs a policy route (ip rule) steering that address out IFACE; without
+one it exits 1 rather than measuring rp_filter drops as UDP loss.
+
 Usage:
-  udp-loss [-c COUNT] [-n NAME] [-s SERVER]...
+  udp-loss [-i IFACE] [-c COUNT] [-n NAME] [-s SERVER]...
 
 Options:
+  -i IFACE       Bind queries to IFACE's address (multi-homed)
   -c COUNT       Queries per server (default: 100)
   -n NAME        Query name (default: cloudflare.com)
   -s SERVER      DNS server (repeatable; default: 1.1.1.1 and 9.9.9.9)
@@ -40,7 +47,7 @@ Interpretation:
 
 Exit codes:
   0  all servers <=1% loss
-  1  usage or dependency error
+  1  usage or dependency error; or -i could not bind an honest probe
   2  all servers >1% loss
   3  divergent results across servers
 EOF
@@ -51,8 +58,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":c:n:s:h" opt; do
+while getopts ":i:c:n:s:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     c) COUNT=$OPTARG ;;
     n) NAME=$OPTARG ;;
     s) SERVERS+=("$OPTARG") ;;
@@ -73,10 +81,24 @@ if [[ ${#SERVERS[@]} -eq 0 ]]; then
   SERVERS=(1.1.1.1 9.9.9.9)
 fi
 
+# The first server stands in for the uplink: every server here is off-link, so
+# a binding that cannot reach one honestly cannot reach any of them.
+DIG_BIND=()
+if [[ -n "$IFACE" ]]; then
+  SRC="$(require_uplink "$IFACE" "${SERVERS[0]}")"
+  DIG_BIND=(-b "$SRC")
+  VIA=$IFACE
+else
+  VIA="$(via_for "${SERVERS[0]}")"
+fi
+
 header udp-loss
-VIA="$(via_for "${SERVERS[0]}")"
 echo "count: ${COUNT}  servers: ${SERVERS[*]}  name: ${NAME}${VIA:+  via: ${VIA}}"
-multihomed_note "$VIA"
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "$VIA" "pass -i IFACE to measure another uplink"
+fi
 echo
 
 declare -a LOSS_PCTS=()
@@ -89,7 +111,7 @@ for srv in "${SERVERS[@]}"; do
   while (( i < COUNT )); do
     # dig exits non-zero on a lost/timed-out query — the very event being
     # measured — so guard the pipeline or set -e/pipefail aborts at first loss.
-    t="$(dig @"$srv" "$NAME" A +time=1 +tries=1 +stats 2>/dev/null \
+    t="$(dig "${DIG_BIND[@]+"${DIG_BIND[@]}"}" @"$srv" "$NAME" A +time=1 +tries=1 +stats 2>/dev/null \
       | awk '/Query time:/ {print $4; exit}' || true)"
     if [[ -n "${t:-}" ]]; then
       ok=$((ok + 1))

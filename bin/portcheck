@@ -28,6 +28,12 @@ Result meanings:
 No UDP mode: without an application reply a bare UDP probe proves nothing.
 Use udp-loss for UDP delivery evidence.
 
+No -i: the probe is a bash /dev/tcp connect(), which cannot bind a source
+address, and pulling in nc or socat to gain one would add a dependency and
+change what the probe proves. On a multi-homed machine the report names the
+interface the connect went out on; to test another uplink, run from a host on
+it, or use a policy route.
+
 Usage:
   portcheck [-t SECONDS] HOST PORT [PORT...]
 

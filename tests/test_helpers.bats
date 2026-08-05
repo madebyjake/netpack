@@ -306,6 +306,68 @@ wt0	100.100.9.10/24" ]
   [[ "$output" == *"— pass -i IFACE to target another uplink"* ]]
 }
 
+@test "uplink_unroutable is silent when the policy route sends SRC out IFACE" {
+  stub_ip "${FIXTURES}/ip_route_get.txt"
+  run uplink_unroutable eno1 10.24.10.157 1.1.1.1
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "uplink_unroutable names the interface the kernel would use instead" {
+  # Binding sets the source address, but without an ip rule the replies come
+  # back on the other uplink and rp_filter eats them, reading as loss.
+  stub_ip "${FIXTURES}/ip_route_get.txt"
+  run uplink_unroutable wlan0 192.168.4.20 1.1.1.1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no policy route sends 192.168.4.20 out wlan0"* ]]
+  [[ "$output" == *"kernel would use eno1"* ]]
+}
+
+@test "uplink_unroutable reports no route when the target is unreachable" {
+  stub_ip_empty
+  run uplink_unroutable eth0 10.0.0.1 203.0.113.1
+  [[ "$output" == *"kernel would use no route"* ]]
+}
+
+@test "require_uplink dies rather than binding a probe that cannot answer" {
+  stub_ip "${FIXTURES}/ip_route_get.txt"
+  run bash -c "
+    source '${REPO}/lib/netpack/parsers.sh'
+    source '${REPO}/lib/netpack.sh'
+    validate_iface() { :; }
+    iface_ipv4() { echo 192.168.4.20; }
+    require_uplink wlan0 1.1.1.1 2>&1
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot probe via wlan0"* ]]
+  [[ "$output" == *"add an ip rule"* ]]
+}
+
+@test "require_uplink prints the source address when the binding is honest" {
+  stub_ip "${FIXTURES}/ip_route_get.txt"
+  run bash -c "
+    source '${REPO}/lib/netpack/parsers.sh'
+    source '${REPO}/lib/netpack.sh'
+    validate_iface() { :; }
+    iface_ipv4() { echo 10.24.10.157; }
+    require_uplink eno1 1.1.1.1
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.24.10.157" ]
+}
+
+@test "require_uplink dies when the interface has no address to bind" {
+  run bash -c "
+    source '${REPO}/lib/netpack/parsers.sh'
+    source '${REPO}/lib/netpack.sh'
+    validate_iface() { :; }
+    iface_ipv4() { echo; }
+    require_uplink eth9 1.1.1.1 2>&1
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no IPv4 address on eth9"* ]]
+}
+
 @test "multihomed_note is silent on a single-homed host" {
   # Two rows for one interface is still single-homed; the note must count
   # distinct interfaces, not addresses.
