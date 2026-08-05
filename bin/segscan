@@ -59,6 +59,7 @@ require_cmd ip
 
 header segscan
 echo "iface: ${IFACE}"
+multihomed_note "$IFACE" "pass -i IFACE to inventory another segment"
 echo
 echo "=== interface ==="
 ip -br addr show dev "$IFACE" || true
@@ -83,13 +84,21 @@ fi
 echo
 echo "=== default gateway ==="
 require_cmd ping
-GW="$(default_gateway)"
+# IFACE's own default route, not the system default: on a multi-homed box the
+# system default usually belongs to another uplink, and reporting it here would
+# attribute another segment's gateway to this one.
+GW="$(iface_gateway "$IFACE")"
 if [[ -n "$GW" ]]; then
   echo "  gateway: ${GW}"
   ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
-  ip neigh show "$GW" 2>/dev/null || true
+  ip neigh show "$GW" dev "$IFACE" 2>/dev/null || true
 else
-  echo "  no default gateway"
+  SYS_GW="$(default_gateway)"
+  if [[ -n "$SYS_GW" ]]; then
+    echo "  no default route on ${IFACE} (system default ${SYS_GW} is on another interface)"
+  else
+    echo "  no default gateway"
+  fi
 fi
 
 echo
