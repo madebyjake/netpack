@@ -38,9 +38,9 @@ check: lint compile test bats smoke
 compile:
 	cd $(REPO) && python3 -m py_compile lib/netpack/*.py $(PY_TOOLS)
 
-# PYTHONPATH is required: lib/ is not an installed package.
+# lib/ is not an installed package; pyproject.toml puts it on the path.
 test:
-	PYTHONPATH=$(REPO)/lib pytest -q $(REPO)/tests
+	cd $(REPO) && pytest -q tests
 
 bats:
 	bats $(REPO)/tests/*.bats
