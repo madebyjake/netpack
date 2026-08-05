@@ -61,6 +61,13 @@ Makefile, not in both places.
 
 `ruff` is pinned to a minor series in `requirements-dev.txt` because its default
 rule set changes between minors, which would turn CI red with no code change.
+`pyproject.toml` pins the rules themselves for the same reason — 0.16 dropped
+E402 from its defaults, so an unpinned ruff flagged every `sys.path.insert`
+before a `netpack` import.
+
+That file is configuration only; there is no Python package to build. It also
+tells pytest and any type checker where `lib/` is, so bare `pytest` works and
+editors resolve `netpack` imports.
 
 ## Adding a tool
 
