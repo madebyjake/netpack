@@ -50,7 +50,20 @@ PLAYBOOK_STEPS=(
   "dropouts  | splitloss -t 300      | A long window with a loss timeline, to place the dropouts against wall-clock time."
 
   "multicast | discover              | Is the device still advertising over mDNS at all?"
-  "multicast | mcastcheck            | Choose recv, and use the group and port from Dante Controller or the NDI sender: is the flow arriving at this drop?"
+  "multicast | mcastcheck            | Choose recv, and use the group and port from Dante Controller or the NDI sender: is the flow arriving at this drop? If it is not, pair this with mcastcheck send from the source's switch position — that needs a second machine, so it is a README procedure."
+)
+
+# Procedures that need a second machine and so cannot be walked as a
+# single-machine sequence. They are listed by `npk playbooks` anyway: an
+# operator on site should see the whole field procedure set, not only the part
+# the launcher can drive. The steps stay in README.md, which tests/test_docs.py
+# checks still carries each title.
+#
+# title | what the second machine provides
+PLAYBOOK_PROSE_ROWS=(
+  "Prove local throughput or one-way UDP loss | a second machine running testsrv"
+  "Prove latency and jitter under load (bufferbloat) | a planned load across the path under test"
+  "Prove WAN uplink throughput | an iperf3 host you control across the WAN"
 )
 
 # -g so the tables survive being sourced from inside a function, as the bats
@@ -84,4 +97,14 @@ playbook_steps() {
 
 playbook_title() {
   printf '%s\n' "${PLAYBOOK_TITLE[$1]:-}"
+}
+
+# Emit "title<TAB>requirement" rows for the procedures that need a second
+# machine, in declaration order.
+playbook_prose() {
+  local row title need
+  for row in "${PLAYBOOK_PROSE_ROWS[@]}"; do
+    IFS='|' read -r title need <<<"$row"
+    printf '%s\t%s\n' "$(trim "$title")" "$(trim "$need")"
+  done
 }
