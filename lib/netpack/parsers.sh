@@ -238,6 +238,24 @@ classify_loss_set() {
 
 # --- segscan ------------------------------------------------------------------
 
+# classify_sweep PREFIX THRESHOLD -> ok | large | unsized
+#
+# Whether an ARP sweep of the interface's subnet needs explicit confirmation.
+# A prefix numerically below THRESHOLD covers more addresses than it, so it is
+# the large case. An unreadable prefix is "unsized" rather than ok: the size
+# guard cannot be applied at all, and running the disruptive path with the
+# protection silently absent is worse than refusing.
+classify_sweep() {
+  local prefix=${1:-} threshold=$2
+  if [[ ! "$prefix" =~ ^[0-9]+$ ]]; then
+    printf 'unsized\n'
+  elif (( 10#$prefix < threshold )); then
+    printf 'large\n'
+  else
+    printf 'ok\n'
+  fi
+}
+
 # IPs claimed by two or more distinct MACs in an arp-scan report, sorted.
 # arp-scan's retries print the same IP+MAC repeatedly and annotate them with
 # "(DUP: n)"; that is one host answering twice, not an address conflict, so
