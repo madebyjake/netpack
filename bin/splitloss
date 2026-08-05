@@ -78,6 +78,9 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 require_uint duration "$T" 1
+# Normalize to base 10: a validated "0120" is 120, but bash arithmetic would
+# read the leading zero as octal and skip the loss timeline.
+T=$((10#$T))
 require_cmd ping ip
 
 PING_BIND=()
