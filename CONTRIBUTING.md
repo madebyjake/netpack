@@ -38,7 +38,15 @@ pip install -r requirements-dev.txt
 sudo apt install shellcheck bats
 # Fedora
 sudo dnf install ShellCheck bats
+# macOS — bash because the tools use declare -g and ${var^^} (bash 4+) while
+# macOS ships 3.2, and coreutils because portcheck needs GNU timeout. Both must
+# come first on PATH.
+brew install shellcheck bats-core bash coreutils
 ```
+
+CI runs the checks on Linux and on macOS. Debian is the target; the macOS job
+exists because its older userland catches portability slips the Linux job
+cannot see, and it is not a required check.
 
 ## Running the checks
 
@@ -61,6 +69,13 @@ Makefile, not in both places.
 
 `ruff` is pinned to a minor series in `requirements-dev.txt` because its default
 rule set changes between minors, which would turn CI red with no code change.
+`pyproject.toml` pins the rules themselves for the same reason — 0.16 dropped
+E402 from its defaults, so an unpinned ruff flagged every `sys.path.insert`
+before a `netpack` import.
+
+That file is configuration only; there is no Python package to build. It also
+tells pytest and any type checker where `lib/` is, so bare `pytest` works and
+editors resolve `netpack` imports.
 
 ## Adding a tool
 
@@ -123,9 +138,63 @@ without `-y`.
 Print the report and write `--dump` anyway, and say in the assessment that the
 run was cut short.
 
+## Commits and branches
+
+Commits follow [Conventional Commits
+1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification):
+`type(scope): subject`. Scope is the tool or area it touches; omit it for
+repo-wide changes.
+
+```
+feat(mtucheck): -i binds DF probes to an uplink and tests its gateway
+fix(dnscheck): reject record types dig would silently query as A
+docs(readme): multi-homed behavior and -i in the production notes
+chore(version): bump version to 0.7.0
+```
+
+Branches follow [Conventional Branch
+1.0.0](https://conventionalbranch.org/v1.0.0/#specification):
+`<type>/<description>`, where type is `feature`, `bugfix`, `hotfix`, `release`,
+or `chore`, and the description is lowercase alphanumeric and hyphens.
+
+```
+bugfix/discover-dump-assessment-code
+feature/bash-json-dump
+chore/document-commit-conventions
+```
+
+One logical change per branch: a `chore:` commit does not belong on a `bugfix/`
+branch.
+
+Do not add `Co-Authored-By` or other trailers.
+
+Comments, commit messages, and documentation stay concise and neutral —
+state the fact, not the rationale around it.
+
 ## Releasing
 
 The version lives in `lib/netpack/__init__.py` and nowhere else; the launcher
-and `lib/netpack.sh` both read it from there. Bump it, then tag with the bare
-version (`x.x.x`), matching the existing tags. Release notes are kept in the
-GitHub release for the tag.
+and `lib/netpack.sh` both read it from there.
+
+Work lands on `dev`. A release branches from `dev`, stabilizes there, and merges
+into `main`:
+
+1. Bump the version on `dev` as `chore(version): bump version to X.Y.Z`.
+2. Branch `release/X.Y.Z` from `dev` and push it.
+3. Fix release blockers on that branch. No features — they continue on `dev`,
+   which stays open.
+4. PR `release/X.Y.Z` into `main` and merge.
+5. Tag `main` with the bare version (`0.8.0`, no `v` prefix).
+6. If the release branch carried commits of its own, merge it back into `dev`.
+   Otherwise those fixes exist only on `main`, and `dev` ships without them.
+7. Publish a GitHub release on the tag, named `netpack-vX.Y.Z-beta`, marked
+   pre-release until 1.0.0. Notes live there; there is no CHANGELOG file.
+
+The tag goes on `main` after the merge, not on the bump commit, so it names
+exactly what shipped even when the release branch carried fixes.
+
+Urgent fixes to a released version branch `hotfix/<description>` from `main` and
+merge into both `main` and `dev`.
+
+Tags before 0.8.0 point at the bump commit rather than at `main`; that predates
+this flow and is not precedent.

@@ -1,0 +1,1 @@
+default via 192.168.4.1 proto dhcp src 192.168.4.20 metric 600 

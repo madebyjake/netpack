@@ -1,0 +1,25 @@
+# Tool configuration only. netpack has no Python package to build: lib/ is
+# imported by path, not installed, and the tools ship as executables in bin/.
+
+[tool.ruff.lint]
+# Ruff's default rule set moves between minor versions — 0.16 dropped E402 from
+# it — which would flip CI red with no code change. requirements-dev.txt pins
+# the version; this pins the rules, so an unpinned ruff behaves the same.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# The tools and tests put lib/ on sys.path before importing netpack, so those
+# imports cannot sit at the top of the file. Reordering them breaks the import.
+"bin/*" = ["E402"]
+"tests/*" = ["E402"]
+
+[tool.pytest.ini_options]
+# lib/ is not an installed package, so the interpreter needs telling where it
+# is. With this, bare `pytest` works as well as the Makefile's target.
+pythonpath = ["lib"]
+testpaths = ["tests"]
+
+[tool.pyright]
+# Same reason: without this a type checker or editor cannot resolve `netpack`
+# and reports every import as missing.
+extraPaths = ["lib"]

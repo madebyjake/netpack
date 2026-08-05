@@ -11,6 +11,7 @@ source "${ROOT}/lib/netpack/parsers.sh"
 NAME="cloudflare.com"
 PUBLIC=""
 TYPE="A"
+IFACE=""
 
 # Baseline candidates, preferred first. The default baseline is chosen at run
 # time as the first of these the system is not already using: a baseline drawn
@@ -35,10 +36,17 @@ stub proves nothing about the servers it forwards to.
 
 Generates a small number of DNS queries.
 
+On a multi-homed machine, -i binds the queries to IFACE's address so a chosen
+uplink's resolver reachability is tested instead of the default route's. The
+baseline resolver is off-link, so the run needs a policy route (ip rule)
+steering that address out IFACE; without one it exits 1 rather than reporting
+rp_filter drops as resolver failure.
+
 Usage:
-  dnscheck [-n NAME] [-p PUBLIC_RESOLVER] [-t TYPE]
+  dnscheck [-i IFACE] [-n NAME] [-p PUBLIC_RESOLVER] [-t TYPE]
 
 Options:
+  -i IFACE             Bind queries to IFACE's address (multi-homed)
   -n NAME              Query name (default: cloudflare.com)
   -p PUBLIC_RESOLVER   Public resolver for baseline (default: auto-chosen; see below)
   -t TYPE              Record type: mnemonic or TYPEn (default: A)
@@ -55,7 +63,7 @@ not evidence.
 
 Exit codes:
   0  at least two distinct resolvers agreed and succeeded
-  1  usage or dependency error
+  1  usage or dependency error; or -i could not bind an honest probe
   2  a resolver failed, no upstreams could be identified, or there was
      nothing independent to compare against
   3  resolvers returned conflicting answers
@@ -69,8 +77,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":n:p:t:h" opt; do
+while getopts ":i:n:p:t:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     n) NAME=$OPTARG ;;
     p) PUBLIC=$OPTARG; PUBLIC_EXPLICIT=1 ;;
     t) TYPE=$OPTARG ;;
@@ -136,7 +145,7 @@ query_one() {
   local server=$1
   local out status addrs rtt
   # One dig so status, answers, and RTT come from the same transaction.
-  out="$(dig @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +answer +comments +stats 2>/dev/null || true)"
+  out="$(dig "${DIG_BIND[@]+"${DIG_BIND[@]}"}" @"$server" "$NAME" "$TYPE" +time=2 +tries=1 +noall +answer +comments +stats 2>/dev/null || true)"
   status="$(printf '%s\n' "$out" | awk '/status:/ {
     for (i=1;i<=NF;i++) if ($i=="status:") { gsub(/,/,"",$(i+1)); print $(i+1); exit }
   }')"
@@ -197,6 +206,23 @@ fi
 BASELINE_SHARED=0
 if is_configured "$PUBLIC"; then
   BASELINE_SHARED=1
+fi
+
+# The baseline is off-link by construction, so it is what the binding must be
+# able to reach; a configured resolver on IFACE's own subnet stays reachable
+# either way.
+DIG_BIND=()
+if [[ -n "$IFACE" ]]; then
+  SRC="$(require_uplink "$IFACE" "$PUBLIC")"
+  DIG_BIND=(-b "$SRC")
+fi
+
+# The resolver rows above are already labeled per link; this names the egress
+# for the queries themselves on a multi-homed box.
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "$(via_for "$PUBLIC")" "pass -i IFACE to test another uplink"
 fi
 
 QUERY_ROWS=("${RESOLVERS[@]+"${RESOLVERS[@]}"}")

@@ -13,6 +13,16 @@ setup() {
   NETPACK_SOURCE_ONLY=1 source "${REPO}/bin/netpack"
 }
 
+# Portable directory mode: GNU stat and BSD stat spell this differently.
+dir_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+# linkstat reads /sys/class/net, so the tests that drive it are Linux-only.
+requires_linux() {
+  [ "$(uname -s)" = "Linux" ] || skip "needs /sys/class/net"
+}
+
 # A local port with nothing listening. Hardcoding a port (22, say) breaks on
 # hosts that run the service: GitHub-hosted runners keep sshd up, so a "closed
 # port" probe against 22 succeeds there and inverts the expected exit code.
@@ -115,15 +125,20 @@ closed_port() {
   [ "${#logs[@]}" -eq 1 ]
   grep -q "ASSESSMENT:" "${logs[0]}"
 
-  # Manifest row records the retypable command and the exit code.
+  # Manifest row records the retypable command and the exit code. portcheck is
+  # in TOOL_JSON, so capture appends the --dump it added on the tool's behalf.
+  local stamp="${logs[0]##*/}"
+  stamp="${stamp%.log}"
   local row
   row="$(grep -v '^#' "${dir}/manifest.tsv")"
   [ "$(printf '%s\n' "$row" | wc -l)" -eq 1 ]
   [ "$(printf '%s' "$row" | cut -f3)" = "2" ]
-  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port}" ]
+  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port} --dump ${dir}/${stamp}.json" ]
+  [ -f "${dir}/${stamp}.json" ]
 }
 
 @test "capture auto-dumps JSON for tools that support it" {
+  requires_linux
   local dir="${BATS_TEST_TMPDIR}/cap-json"
   # linkstat against loopback: dump-capable, needs no root and no network.
   run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" linkstat -i lo -t 1
@@ -134,6 +149,7 @@ closed_port() {
 }
 
 @test "capture leaves an operator-chosen --dump path alone" {
+  requires_linux
   local dir="${BATS_TEST_TMPDIR}/cap-json2"
   run env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" \
     linkstat -i lo -t 1 --dump "${dir}/custom.json"
@@ -149,7 +165,7 @@ closed_port() {
   env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 22 >/dev/null || true
   env NO_COLOR=1 "${REPO}/bin/netpack" -o "$dir" portcheck 127.0.0.1 23 >/dev/null || true
   [ "$(grep -cv '^#' "${dir}/manifest.tsv")" -eq 2 ]
-  [ "$(stat -c '%a' "$dir")" = "700" ]
+  [ "$(dir_mode "$dir")" = "700" ]
 }
 
 @test "manifest quotes arguments the shell would split" {
@@ -204,6 +220,23 @@ closed_port() {
     done
     [ "$found" -eq 1 ] || { echo "step for undeclared playbook: $id"; return 1; }
   done
+}
+
+@test "the playbook list prints an unpadded step count" {
+  # BSD wc pads its count to 8 columns, which landed inside the parens as
+  # "(       4 steps)". GNU wc does not, so this only shows on a BSD userland.
+  run env NO_COLOR=1 "${REPO}/bin/netpack" playbooks
+  [ "$status" -eq 0 ]
+  local seen=0 line
+  while IFS= read -r line; do
+    case "$line" in
+      *" steps)"*)
+        seen=$((seen + 1))
+        [[ "$line" =~ \([0-9]+\ steps\) ]] || { echo "padded: [$line]"; return 1; }
+        ;;
+    esac
+  done <<<"$output"
+  [ "$seen" -ge 4 ]
 }
 
 @test "resolve_playbook accepts a number or a name" {

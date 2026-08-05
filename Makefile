@@ -10,8 +10,10 @@ BINDIR ?= $(PREFIX)/bin
 REPO := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 # Bash tools are selected by shebang: bin/ also holds extensionless Python ones.
+# The # is escaped because make 3.81 (macOS) reads an unescaped one inside
+# $(shell ...) as a comment and truncates the call; 4.x does not care either way.
 SHELL_SCRIPTS = $(shell \
-	find $(REPO)/bin -type f -exec awk 'FNR == 1 && /^#!.*bash/ { print FILENAME }' {} + | sort; \
+	find $(REPO)/bin -type f -exec awk 'FNR == 1 && /^\#!.*bash/ { print FILENAME }' {} + | sort; \
 	find $(REPO)/lib -type f -name '*.sh' | sort)
 PY_TOOLS = bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck bin/cabletest
 
@@ -38,9 +40,9 @@ check: lint compile test bats smoke
 compile:
 	cd $(REPO) && python3 -m py_compile lib/netpack/*.py $(PY_TOOLS)
 
-# PYTHONPATH is required: lib/ is not an installed package.
+# lib/ is not an installed package; pyproject.toml puts it on the path.
 test:
-	PYTHONPATH=$(REPO)/lib pytest -q $(REPO)/tests
+	cd $(REPO) && pytest -q tests
 
 bats:
 	bats $(REPO)/tests/*.bats
@@ -57,13 +59,15 @@ shellcheck:
 # Mirrors the CI smoke step. The awk sets a flag rather than exiting: exiting
 # early closes its end of the pipe while netpack is still writing the legend,
 # and under netpack's `set -o pipefail` that write fails with EPIPE.
+# Built with a read loop rather than mapfile, which macOS bash 3.2 lacks.
 smoke:
 	@$(REPO)/bin/netpack --version
 	@$(REPO)/bin/netpack help >/dev/null
 	@$(REPO)/bin/npk list >/dev/null
 	@$(REPO)/bin/netpack playbooks >/dev/null
 	@set -e; \
-	mapfile -t tools < <($(REPO)/bin/netpack list \
+	tools=(); \
+	while read -r t; do tools+=("$$t"); done < <($(REPO)/bin/netpack list \
 	  | awk 'NR > 2 { if (NF == 0) stop = 1; if (!stop && $$1 ~ /^[a-z0-9-]+$$/) print $$1 }'); \
 	if (( $${#tools[@]} < 12 )); then \
 	  echo "expected >= 12 tools, got $${#tools[@]}"; exit 1; \

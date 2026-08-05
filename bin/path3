@@ -11,6 +11,7 @@ source "${ROOT}/lib/netpack/parsers.sh"
 COUNT=50
 PORT=443
 TARGET=""
+IFACE=""
 
 usage() {
   cat <<'EOF'
@@ -23,10 +24,16 @@ authorized to test.
 Tries unprivileged first; if a mode fails (common without CAP_NET_RAW on
 UDP/TCP), re-run with sudo.
 
+On a multi-homed machine, -i binds the probes to IFACE's address so a chosen
+uplink's path is traced instead of the default route's. The target is off-link,
+so the run needs a policy route (ip rule) steering that address out IFACE;
+without one it exits 1 rather than tracing a path the probes did not take.
+
 Usage:
-  path3 [-c COUNT] [-p TCP_PORT] TARGET
+  path3 [-i IFACE] [-c COUNT] [-p TCP_PORT] TARGET
 
 Options:
+  -i IFACE      Bind probes to IFACE's address (multi-homed)
   -c COUNT      Probes per mode (default: 50)
   -p TCP_PORT   TCP destination port (default: 443)
   -h, --help    Show this help
@@ -39,7 +46,7 @@ Notes:
 
 Exit codes:
   0  all modes produced usable reports, no final-hop loss above 1%
-  1  usage, dependency, permission, or mode failure
+  1  usage, dependency, permission, or mode failure; or -i could not bind
   2  final-hop loss above 1% on every measured protocol
   3  final-hop loss above 1% on some protocols but not others
 EOF
@@ -50,8 +57,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":c:p:h" opt; do
+while getopts ":i:c:p:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     c) COUNT=$OPTARG ;;
     p) PORT=$OPTARG ;;
     h) usage; exit 0 ;;
@@ -68,8 +76,22 @@ require_uint count "$COUNT" 1
 require_uint port "$PORT" 1 65535
 require_cmd mtr awk
 
+MTR_BIND=()
+if [[ -n "$IFACE" ]]; then
+  SRC="$(require_uplink "$IFACE" "$TARGET")"
+  MTR_BIND=(-a "$SRC")
+  VIA=$IFACE
+else
+  VIA="$(via_for "$TARGET")"
+fi
+
 header path3
-echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}"
+echo "target: ${TARGET}  count: ${COUNT}  tcp_port: ${PORT}${VIA:+  via: ${VIA}}"
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "$VIA" "pass -i IFACE to trace another uplink"
+fi
 echo
 
 DIR="$(private_tmpdir path3)"
@@ -86,7 +108,7 @@ run_mode() {
   echo "=== ${label} (${COUNT} probes) ==="
   # mtr -r prints nothing until it finishes, so run it in the background and
   # tick elapsed time on stderr; the report itself loses nothing.
-  mtr -rwb -c "$COUNT" "$@" "$TARGET" >"$out" &
+  mtr -rwb "${MTR_BIND[@]+"${MTR_BIND[@]}"}" -c "$COUNT" "$@" "$TARGET" >"$out" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     pulse "${label}: $((SECONDS - t0))s of ~${COUNT}s"

@@ -18,7 +18,8 @@ Requires root for arp-scan and typically for LLDP neighbor queries.
 The sweep probes every address on the subnet and can read as recon to NAC or
 switch port-security; run it only where you are authorized. Large prefixes also
 generate substantial broadcast traffic — sweeps larger than /22 (1024
-addresses) require -y to confirm.
+addresses) require -y to confirm. If the interface prefix cannot be read the
+sweep cannot be sized, so it also requires -y rather than proceeding unchecked.
 
 Usage:
   segscan [-i IFACE] [-y]
@@ -30,7 +31,7 @@ Options:
 
 Exit codes:
   0  inventory completed (sweep may be skipped if noted)
-  1  usage, dependency, or refused large sweep
+  1  usage, dependency, or refused sweep (too large, or size unknown)
   2  duplicate IP addresses detected
 EOF
 }
@@ -59,6 +60,7 @@ require_cmd ip
 
 header segscan
 echo "iface: ${IFACE}"
+multihomed_note "$IFACE" "pass -i IFACE to inventory another segment"
 echo
 echo "=== interface ==="
 ip -br addr show dev "$IFACE" || true
@@ -83,13 +85,21 @@ fi
 echo
 echo "=== default gateway ==="
 require_cmd ping
-GW="$(default_gateway)"
+# IFACE's own default route, not the system default: on a multi-homed box the
+# system default usually belongs to another uplink, and reporting it here would
+# attribute another segment's gateway to this one.
+GW="$(iface_gateway "$IFACE")"
 if [[ -n "$GW" ]]; then
   echo "  gateway: ${GW}"
   ping -c1 -W1 "$GW" >/dev/null 2>&1 || true
-  ip neigh show "$GW" 2>/dev/null || true
+  ip neigh show "$GW" dev "$IFACE" 2>/dev/null || true
 else
-  echo "  no default gateway"
+  SYS_GW="$(default_gateway)"
+  if [[ -n "$SYS_GW" ]]; then
+    echo "  no default route on ${IFACE} (system default ${SYS_GW} is on another interface)"
+  else
+    echo "  no default gateway"
+  fi
 fi
 
 echo
@@ -112,17 +122,24 @@ iface_prefixlen() {
 }
 
 PREFIX="$(iface_prefixlen || true)"
-if [[ -n "$PREFIX" ]] && is_uint "$PREFIX"; then
-  # hosts in subnet approx 2^(32-prefix) excluding extremes; use address count 2^(32-p)
-  if (( PREFIX < 22 )); then
-    HOSTS=$((1 << (32 - PREFIX)))
+case "$(classify_sweep "$PREFIX" 22)" in
+  large)
+    # Address count is 2^(32-prefix), including the network and broadcast ends.
+    HOSTS=$((1 << (32 - 10#$PREFIX)))
     echo "  interface prefix /${PREFIX} (~${HOSTS} addresses)"
     if [[ "$CONFIRM_LARGE" -ne 1 ]]; then
       die "ARP sweep of /${PREFIX} may disrupt a live segment; re-run with -y to confirm"
     fi
     echo "  large sweep confirmed with -y"
-  fi
-fi
+    ;;
+  unsized)
+    echo "  $(color_status warn "interface prefix unknown; sweep size cannot be checked")"
+    if [[ "$CONFIRM_LARGE" -ne 1 ]]; then
+      die "cannot determine the subnet size on ${IFACE}; re-run with -y to confirm the sweep"
+    fi
+    echo "  unsized sweep confirmed with -y"
+    ;;
+esac
 
 if ! command -v arp-scan >/dev/null 2>&1; then
   echo "  $(color_status warn "arp-scan not installed")"

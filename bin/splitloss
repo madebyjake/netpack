@@ -12,6 +12,7 @@ T=60
 WAN=1.1.1.1
 DIR=""
 KEEP_LOGS=0
+IFACE=""
 
 usage() {
   cat <<'EOF'
@@ -30,10 +31,18 @@ listed with its wall-clock start, for correlating with incident reports.
 Ctrl-C ends the window early: the pings print their partial summaries and the
 comparison covers the completed portion.
 
+On a multi-homed machine, -i binds both probes to IFACE and tests that
+interface's own gateway instead of the default route's. The WAN leg is only
+honest when a policy route (ip rule) steers IFACE's address out that uplink;
+without one, replies would follow the main routing table and rp_filter can
+drop them, so the WAN leg is reported untestable and the run exits 1 rather
+than fabricating loss. Binding may require root on some systems.
+
 Usage:
-  splitloss [-t SECONDS] [-w WAN_TARGET] [-d DIR]
+  splitloss [-i IFACE] [-t SECONDS] [-w WAN_TARGET] [-d DIR]
 
 Options:
+  -i IFACE         Bind probes to IFACE and test its gateway (multi-homed)
   -t SECONDS       Test duration (default: 60)
   -w WAN_TARGET    WAN ICMP target (default: 1.1.1.1)
   -d DIR           Keep logs in DIR (timestamped filenames; created if needed)
@@ -44,7 +53,7 @@ after the summary is printed. Use -d to retain logs for timeline correlation.
 
 Exit codes:
   0  both targets clean (<=1% loss)
-  1  usage, dependency, or probe failure
+  1  usage, dependency, or probe failure; or the WAN leg was untestable via -i
   2  gateway loss (>1%)
   3  gateway clean, WAN loss (>1%)
 EOF
@@ -55,8 +64,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":t:w:d:h" opt; do
+while getopts ":i:t:w:d:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     t) T=$OPTARG ;;
     w) WAN=$OPTARG ;;
     d) DIR=$OPTARG; KEEP_LOGS=1 ;;
@@ -68,10 +78,29 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 require_uint duration "$T" 1
+# Normalize to base 10: a validated "0120" is 120, but bash arithmetic would
+# read the leading zero as octal and skip the loss timeline.
+T=$((10#$T))
 require_cmd ping ip
 
-GW="$(default_gateway)"
-[[ -n "$GW" ]] || die "no default gateway"
+PING_BIND=()
+WAN_SKIP=""
+if [[ -n "$IFACE" ]]; then
+  validate_iface "$IFACE"
+  GW="$(iface_gateway "$IFACE")"
+  [[ -n "$GW" ]] || die "no default route via ${IFACE}; its gateway is unknown"
+  SRC="$(iface_ipv4 "$IFACE")"
+  [[ -n "$SRC" ]] || die "no IPv4 address on ${IFACE}"
+  PING_BIND=(-I "$IFACE")
+  VIA=$IFACE
+  # The gateway is on-link, so binding alone tests it honestly; only the WAN
+  # leg needs a policy route.
+  WAN_SKIP="$(uplink_unroutable "$IFACE" "$SRC" "$WAN")"
+else
+  GW="$(default_gateway)"
+  [[ -n "$GW" ]] || die "no default gateway"
+  VIA="$(via_for "$WAN")"
+fi
 
 if [[ "$KEEP_LOGS" -eq 1 ]]; then
   mkdir -p "$DIR"
@@ -93,7 +122,15 @@ cleanup() {
 trap cleanup EXIT
 
 header splitloss
-echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s"
+echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s${VIA:+  via: ${VIA}}"
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "$VIA" "pass -i IFACE to target another uplink"
+fi
+if [[ -n "$WAN_SKIP" ]]; then
+  warning "WAN leg untestable via ${IFACE}: ${WAN_SKIP}"
+fi
 # Wall-clock base for the loss timeline: seq N was sent ~N-1 seconds after this.
 START_EPOCH="$(date +%s)"
 
@@ -117,14 +154,19 @@ wait_bg() {
 }
 
 set +e
-ping -D -i 1 -w "$T" "$GW"  >"$LOG_GW"  2>&1 &
+ping "${PING_BIND[@]+"${PING_BIND[@]}"}" -D -i 1 -w "$T" "$GW"  >"$LOG_GW"  2>&1 &
 P1=$!
-ping -D -i 1 -w "$T" "$WAN" >"$LOG_WAN" 2>&1 &
-P2=$!
+if [[ -z "$WAN_SKIP" ]]; then
+  ping "${PING_BIND[@]+"${PING_BIND[@]}"}" -D -i 1 -w "$T" "$WAN" >"$LOG_WAN" 2>&1 &
+  P2=$!
+fi
 wait_bg "$P1"
 RC1=$WAIT_RC
-wait_bg "$P2"
-RC2=$WAIT_RC
+RC2=0
+if [[ -z "$WAN_SKIP" ]]; then
+  wait_bg "$P2"
+  RC2=$WAIT_RC
+fi
 set -e
 trap - INT
 if (( INTERRUPTED )); then
@@ -132,12 +174,15 @@ if (( INTERRUPTED )); then
 fi
 
 # ping returns 1 when some packets are lost but the run completed; 2+ is error.
-if [[ ! -s "$LOG_GW" || ! -s "$LOG_WAN" ]]; then
+if [[ ! -s "$LOG_GW" ]] || { [[ -z "$WAN_SKIP" && ! -s "$LOG_WAN" ]]; }; then
   echo "logs retained: ${DIR}" >&2
   die "ping produced empty logs (check permissions and connectivity)"
 fi
 if (( RC1 >= 2 || RC2 >= 2 )); then
   echo "logs retained: ${DIR}" >&2
+  if [[ -n "$IFACE" ]]; then
+    die "ping failed (gateway exit ${RC1}, wan exit ${RC2}); binding with -i may require root — re-run with sudo"
+  fi
   die "ping failed (gateway exit ${RC1}, wan exit ${RC2})"
 fi
 
@@ -145,10 +190,13 @@ gl="$(loss_pct "$LOG_GW")" || {
   echo "logs retained: ${DIR}" >&2
   die "could not parse gateway ping summary in ${LOG_GW}"
 }
-wl="$(loss_pct "$LOG_WAN")" || {
-  echo "logs retained: ${DIR}" >&2
-  die "could not parse WAN ping summary in ${LOG_WAN}"
-}
+wl=""
+if [[ -z "$WAN_SKIP" ]]; then
+  wl="$(loss_pct "$LOG_WAN")" || {
+    echo "logs retained: ${DIR}" >&2
+    die "could not parse WAN ping summary in ${LOG_WAN}"
+  }
+fi
 
 # "label (host): X% packet loss  rtt min/avg/max/mdev a/b/c/d ms" — rtt is
 # omitted when the log has no summary (100% loss).
@@ -191,18 +239,28 @@ print_timeline() {
 }
 
 print_target gateway "$GW" "$gl" "$LOG_GW"
-print_target wan "$WAN" "$wl" "$LOG_WAN"
+if [[ -n "$WAN_SKIP" ]]; then
+  printf '%-7s (%s): %s\n' wan "$WAN" "$(color_status warn "untestable via ${IFACE}")"
+else
+  print_target wan "$WAN" "$wl" "$LOG_WAN"
+fi
 
 # For long runs, show when the loss happened, not just how much.
 if (( T >= 120 )); then
   section "loss timeline (60s intervals, lossy only)"
   print_timeline gateway "$LOG_GW"
-  print_timeline wan "$LOG_WAN"
+  if [[ -z "$WAN_SKIP" ]]; then
+    print_timeline wan "$LOG_WAN"
+  fi
   echo
 fi
 
 if [[ "$KEEP_LOGS" -eq 1 ]]; then
-  echo "logs: ${LOG_GW} ${LOG_WAN}"
+  if [[ -n "$WAN_SKIP" ]]; then
+    echo "logs: ${LOG_GW}"
+  else
+    echo "logs: ${LOG_GW} ${LOG_WAN}"
+  fi
 else
   echo "logs: discarded after summary (pass -d DIR to retain)"
 fi
@@ -211,10 +269,15 @@ fi
 CLEAN_TMP=1
 
 if awk -v p="$gl" 'BEGIN { exit !(p > 1) }'; then
-  verdict "loss to gateway indicates an access-layer problem." \
+  verdict "loss to gateway indicates an access-layer problem.${WAN_SKIP:+ The WAN leg was untested.}" \
     "Inspect local switch/AP, cabling, and the gateway path."
   finished
   exit 2
+elif [[ -n "$WAN_SKIP" ]]; then
+  verdict "gateway via ${IFACE} is clean; the WAN leg was untestable (${WAN_SKIP})." \
+    "Add a policy route (ip rule) for ${SRC} to test this uplink end-to-end, or run without -i for the default path."
+  finished
+  exit 1
 elif awk -v p="$wl" 'BEGIN { exit !(p > 1) }'; then
   verdict "gateway is clean; WAN path shows loss." \
     "Inspect uplink, venue circuit, and upstream path evidence."

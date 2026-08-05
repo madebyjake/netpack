@@ -19,17 +19,25 @@ mtucheck — find the largest ICMP payload that reaches gateway and WAN without 
 Detects classic path MTU black holes (small pings work; large transfers stall).
 Uses ping Do-Not-Fragment probes. Low traffic; safe for planned field checks.
 
+On a multi-homed machine, -i binds the probes to IFACE and tests that
+interface's own gateway instead of the default route's. The WAN leg is only
+honest when a policy route (ip rule) steers IFACE's address out that uplink;
+without one it is reported untestable and the run exits 1. The informational
+tracepath section is skipped under -i (tracepath cannot bind). Binding may
+require root on some systems.
+
 Usage:
-  mtucheck [-w WAN_TARGET] [-m MAX_SIZE]
+  mtucheck [-i IFACE] [-w WAN_TARGET] [-m MAX_SIZE]
 
 Options:
+  -i IFACE        Bind probes to IFACE and test its gateway (multi-homed)
   -w WAN_TARGET   WAN ICMP target (default: 1.1.1.1)
   -m MAX_SIZE     Maximum total IP size to test (default: 1500)
   -h, --help      Show this help
 
 Exit codes:
   0  gateway and WAN support a full-size path near MAX
-  1  usage, dependency, or probe error
+  1  usage, dependency, or probe error; or the WAN leg was untestable via -i
   2  reduced MTU detected on gateway or WAN path
 EOF
 }
@@ -39,8 +47,11 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":w:m:h" opt; do
+IFACE=""
+
+while getopts ":i:w:m:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     w) WAN=$OPTARG ;;
     m) MAX=$OPTARG ;;
     h) usage; exit 0 ;;
@@ -51,10 +62,29 @@ shift $((OPTIND - 1))
 no_extra_args "$@"
 
 require_uint "max size" "$MAX" 100
+# Normalize to base 10: a validated "0100" is 100, but bash arithmetic would
+# read the leading zero as octal.
+MAX=$((10#$MAX))
 require_cmd ping ip awk
 
-GW="$(default_gateway)"
-[[ -n "$GW" ]] || die "no default gateway"
+PING_BIND=()
+WAN_SKIP=""
+if [[ -n "$IFACE" ]]; then
+  validate_iface "$IFACE"
+  GW="$(iface_gateway "$IFACE")"
+  [[ -n "$GW" ]] || die "no default route via ${IFACE}; its gateway is unknown"
+  SRC="$(iface_ipv4 "$IFACE")"
+  [[ -n "$SRC" ]] || die "no IPv4 address on ${IFACE}"
+  PING_BIND=(-I "$IFACE")
+  VIA=$IFACE
+  # The gateway is on-link, so binding alone tests it honestly; only the WAN
+  # leg needs a policy route.
+  WAN_SKIP="$(uplink_unroutable "$IFACE" "$SRC" "$WAN")"
+else
+  GW="$(default_gateway)"
+  [[ -n "$GW" ]] || die "no default gateway"
+  VIA="$(via_for "$WAN")"
+fi
 
 # Linux ping: -M do (DF), -s payload size. IP+ICMP headers ≈ 28 bytes for IPv4.
 # Working total size ≈ payload + 28.
@@ -63,7 +93,8 @@ ping_df() {
   local host=$1
   local payload=$2
   pulse "${host}: DF probe, payload ${payload}"
-  ping -c2 -W1 -M "do" -s "$payload" "$host" >/dev/null 2>&1
+  ping "${PING_BIND[@]+"${PING_BIND[@]}"}" -c2 -W1 -M "do" -s "$payload" "$host" \
+    >/dev/null 2>&1
 }
 
 largest_ok() {
@@ -98,10 +129,20 @@ largest_ok() {
 }
 
 header mtucheck
-echo "max: ${MAX}  gateway: ${GW}  wan: ${WAN}"
+echo "max: ${MAX}  gateway: ${GW}  wan: ${WAN}${VIA:+  via: ${VIA}}"
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "$VIA" "pass -i IFACE to target another uplink"
+fi
+if [[ -n "$WAN_SKIP" ]]; then
+  warning "WAN leg untestable via ${IFACE}: ${WAN_SKIP}"
+fi
 echo
 
-if command -v tracepath >/dev/null 2>&1; then
+# tracepath follows the routing table and cannot bind, so under -i it would
+# describe a different path than the probes; skip it rather than mislead.
+if [[ -z "$IFACE" ]] && command -v tracepath >/dev/null 2>&1; then
   echo "=== tracepath (informational) ==="
   tracepath -n "$GW" 2>/dev/null | tail -n 5 || true
   echo
@@ -111,7 +152,10 @@ fi
 
 echo "=== DF ping binary search ==="
 gw_payload="$(largest_ok "$GW")" || true
-wan_payload="$(largest_ok "$WAN")" || true
+wan_payload=""
+if [[ -z "$WAN_SKIP" ]]; then
+  wan_payload="$(largest_ok "$WAN")" || true
+fi
 
 gw_total="$(mtu_total "${gw_payload:-0}")"
 wan_total="$(mtu_total "${wan_payload:-0}")"
@@ -131,11 +175,36 @@ color_mtu() {
 
 printf 'gateway (%s): largest OK payload %s (approx IP size %s)\n' \
   "$GW" "${gw_payload:-0}" "$(color_mtu "$gw_total")"
-printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
-  "$WAN" "${wan_payload:-0}" "$(color_mtu "$wan_total")"
+if [[ -n "$WAN_SKIP" ]]; then
+  printf 'wan     (%s): %s\n' "$WAN" "$(color_status warn "untestable via ${IFACE}")"
+else
+  printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
+    "$WAN" "${wan_payload:-0}" "$(color_mtu "$wan_total")"
+fi
+
+# A skipped WAN leg is unmeasured, not 0 (0 would classify as blocked), so the
+# verdict is drawn from the gateway measurement alone.
+if [[ -n "$WAN_SKIP" ]]; then
+  if (( gw_total == 0 )); then
+    die "DF probes to the gateway failed via ${IFACE} (ICMP blocked, or binding may require root — re-run with sudo)"
+  elif (( gw_total < threshold )); then
+    verdict "reduced MTU on the gateway path via ${IFACE}; WAN leg untested." \
+      "Check tunnels, PPPoE, and firewall DF handling on this uplink."
+    finished
+    exit 2
+  else
+    verdict "gateway path via ${IFACE} accepted near-full-size DF probes; the WAN leg was untestable (${WAN_SKIP})." \
+      "Add a policy route (ip rule) for ${SRC} to test this uplink end-to-end, or run without -i for the default path."
+    finished
+    exit 1
+  fi
+fi
 
 case "$(classify_mtu "$threshold" "$gw_total" "$wan_total")" in
   blocked)
+    if [[ -n "$IFACE" ]]; then
+      die "DF probes failed to gateway and WAN via ${IFACE} (ICMP blocked, or binding may require root — re-run with sudo)"
+    fi
     die "DF probes failed to gateway and WAN (ICMP blocked or no route)"
     ;;
   reduced)

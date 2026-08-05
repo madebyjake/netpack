@@ -134,6 +134,42 @@ setup() {
   [ "$output" = $'eno1\t8.8.8.8\nwt0\t9.9.9.9' ]
 }
 
+# --- ip route / addr ----------------------------------------------------------
+
+@test "parse_route_dev extracts the egress interface from ip route get" {
+  run parse_route_dev "${FIXTURES}/ip_route_get.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "eno1" ]
+}
+
+@test "parse_route_dev is silent when no dev field is present" {
+  output="$(printf 'RTNETLINK answers: Network is unreachable\n' | parse_route_dev)"
+  [ "$output" = "" ]
+}
+
+@test "parse_default_via picks the first (preferred-metric) default route" {
+  run parse_default_via "${FIXTURES}/ip_route_default.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.9.8.1" ]
+}
+
+@test "parse_default_via handles the dev-filtered form, which omits dev" {
+  run parse_default_via "${FIXTURES}/ip_route_default_dev.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "192.168.4.1" ]
+}
+
+@test "parse_default_via is silent without a default route" {
+  output="$(printf '10.24.10.0/23 dev eno1 proto kernel scope link\n' | parse_default_via)"
+  [ "$output" = "" ]
+}
+
+@test "parse_global_ifaces emits one iface/cidr row per address" {
+  run parse_global_ifaces "${FIXTURES}/ip_addr_global.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'eno1\t10.24.10.157/23\nwt0\t100.100.8.136/24\nwt0\t100.100.9.10/24' ]
+}
+
 # --- shared loss classification ----------------------------------------------
 
 @test "classify_loss_set separates a shared fault from a selective one" {
@@ -166,6 +202,34 @@ setup() {
 }
 
 # --- segscan -----------------------------------------------------------------
+
+@test "classify_sweep calls a prefix wider than the threshold large" {
+  run classify_sweep 16 22
+  [ "$output" = "large" ]
+  run classify_sweep 21 22
+  [ "$output" = "large" ]
+}
+
+@test "classify_sweep treats the threshold itself as ok" {
+  run classify_sweep 22 22
+  [ "$output" = "ok" ]
+  run classify_sweep 24 22
+  [ "$output" = "ok" ]
+}
+
+@test "classify_sweep reads a prefix with a leading zero as decimal" {
+  run classify_sweep 024 22
+  [ "$output" = "ok" ]
+}
+
+@test "classify_sweep refuses to size an unreadable prefix" {
+  # Fails closed: the guard cannot be applied, so the sweep must not proceed
+  # unconfirmed with the protection silently absent.
+  for bad in "" "-" "abc" "24/8"; do
+    run classify_sweep "$bad" 22
+    [ "$output" = "unsized" ] || { echo "sized: [$bad] -> $output"; return 1; }
+  done
+}
 
 @test "arp_duplicates flags only IPs claimed by two or more MACs" {
   # .10 has two MACs and .30 has three: real conflicts. .20 appears twice with

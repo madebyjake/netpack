@@ -32,6 +32,43 @@ Update later with `git -C ~/netpack pull`; `make uninstall` removes the links.
 
 Alternatively for Scapy only: `pip install -r ~/netpack/requirements.txt`
 
+### Pinning to a release
+
+The clone above tracks `main`, which moves. Pin a field box to a release tag
+instead, so tool behaviour and evidence semantics stay fixed for the duration of
+an engagement:
+
+```bash
+# Clone at a release
+git clone --branch 0.7.0 https://github.com/madebyjake/netpack.git ~/netpack
+
+# Or move an existing clone onto one
+git -C ~/netpack fetch --tags
+git -C ~/netpack checkout 0.7.0
+
+npk --version          # confirm what is installed
+```
+
+Tags are the bare version (`0.7.0`) and match the GitHub release named
+`netpack-vX.Y.Z-beta`. Because `make install` symlinks rather than copies,
+checking out a different tag switches the installed tools immediately — there is
+nothing to re-install.
+
+A tag checkout leaves the clone on a detached HEAD, so `git pull` no longer
+applies. Move to a later release with `fetch --tags` then `checkout <tag>`, and
+return to tracking the branch with `git -C ~/netpack checkout main`.
+
+List what is available with `git -C ~/netpack tag -l` or `gh release list`.
+Every release is marked pre-release until 1.0.0, which means GitHub's
+`/releases/latest` endpoint returns 404 — do not script against it.
+
+For a machine without git, a release tarball carries the same tree:
+
+```bash
+curl -fsSL https://github.com/madebyjake/netpack/archive/refs/tags/0.7.0.tar.gz \
+  | tar -xz -C ~ && mv ~/netpack-0.7.0 ~/netpack
+```
+
 Developing or running the test suite? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Launcher
@@ -141,8 +178,8 @@ The throughput and bufferbloat procedures need a second machine running
 
 **Prove local throughput or one-way UDP loss**
 
-1. On the uConsole: `sudo testsrv`
-2. On the machine under test: `testcli <uconsole-ip>` (TCP) or `testcli -u <uconsole-ip>` (UDP)
+1. On the netpack box: `sudo testsrv`
+2. On the machine under test: `testcli <server-ip>` (TCP) or `testcli -u <server-ip>` (UDP)
 
 **Prove latency and jitter under load (bufferbloat)**
 
@@ -211,13 +248,17 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 ## Production notes
 
 - All tools are IPv4-only (DHCP, ARP, MTU header math, default targets). Dual-stack faults on the v6 side are out of scope.
+- On a multi-homed machine (eth into the segment under test plus Wi-Fi for internet, or two uplinks) the routed tools follow the routing table and say so: the report names the interface the probes ride, a `note:` lists every addressed interface, and the menu's context line shows the others under `also`.
+- `-i IFACE` binds probes to a chosen uplink instead: `splitloss`, `mtucheck`, `dnscheck`, `webcheck`, `udp-loss`, `path3` (and `discover`, `segscan`, `ringcap`, `dhcpprobe`, `linkstat`, `cabletest`, `wifiscan`, `mcastcheck`, which are interface-scoped anyway). Binding sets the probe's source address, but replies follow the main routing table unless a policy route (`ip rule`) steers that address back out the same interface — without one, rp_filter drops them and the tool would read it as loss, blocking, or a portal. Every `-i` run checks for that route first. `splitloss` and `mtucheck` keep their gateway leg (it is on-link and stays honest) and report only the WAN leg as untestable; the rest have no on-link target, so they exit 1 rather than measure the wrong thing.
+- `portcheck` has no `-i`: its probe is a bash `/dev/tcp` connect(), which cannot bind a source address. Adding `nc` or `socat` to gain one would add a dependency and change what the probe proves. It still names the interface the connect went out on.
 - Prefer least privilege: tools that need root say so and exit cleanly.
 - Every tool rejects arguments it does not understand (exit 1) rather than
   falling back to defaults, so a typo like `splitloss -t 60 8.8.8.8` fails
   loudly instead of quietly testing the default target.
 - Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
 - JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`), and `mcastcheck send` records `interrupted`.
-- JSON `--dump` evidence is currently available only on the Python tools (`dhcpprobe`, `linkstat`, `cabletest`, `discover`, `mcastcheck`); under `-o DIR` capture those tools dump into the capture directory automatically. Bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
+- JSON `--dump` evidence is available on `dhcpprobe`, `linkstat`, `cabletest`, `discover`, `mcastcheck`, `portcheck` and `webcheck`; under `-o DIR` capture those tools dump into the capture directory automatically. The remaining bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
+- In a dump, `null` means "not determined" and is never interchangeable with `0` or `""`: an untestable leg, an unknown egress interface, or a measurement the tool could not take all serialize as `null`, so a consumer cannot read them as clean.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.
 - `discover` sends its queries via the default-route interface; on a multi-homed machine the segment under test is often not the default route, so pass `-i` to pin it (for example `discover -i eth0`).
 - `discover` requests unicast mDNS replies (QU); responders that only multicast are not captured, so it is best-effort, not an exhaustive inventory.

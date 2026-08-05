@@ -203,7 +203,7 @@ term_rows() {
 # plus privilege state. Never fatal — a missing piece is itself evidence, so it
 # renders in red instead of aborting the menu.
 print_context() {
-  local iface='' addr='' gw=''
+  local iface='' addr='' gw='' others=''
   iface="$(ip -o route get 1.1.1.1 2>/dev/null \
     | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')" || true
   if [[ -z "$iface" ]]; then
@@ -252,6 +252,14 @@ print_context() {
     printf '  %sroot%s\n' "$C_ROOT" "$C_OFF"
   else
     printf '  %sroot: no%s\n' "$C_DIM" "$C_OFF"
+  fi
+  # Other interfaces holding global IPv4 addresses: on a multi-homed box the
+  # link line above is only one of the stories, so name the rest.
+  others="$(ip -o -4 addr show scope global 2>/dev/null \
+    | awk -v skip="$iface" '$2 != skip && $3 == "inet" \
+        { printf "%s%s %s", (n++ ? "  " : ""), $2, $4 }')" || true
+  if [[ -n "$others" ]]; then
+    printf '  %salso%s  %s\n' "$C_DIM" "$C_OFF" "$others"
   fi
   # Capture is a property of the whole session, so say so on every draw rather
   # than only at the run that writes a file.
@@ -383,7 +391,7 @@ render_menu() {
 MENU_LEVELS=("1 1 1" "0 1 1" "0 1 0" "0 0 0")
 
 # draw_menu ALLOW_BANNER — sheds decoration on short terminals so the tool rows
-# and the prompt stay on screen (the uConsole console is not tall).
+# and the prompt stay on screen (field terminals are often short).
 draw_menu() {
   local allow_banner=$1
   local rows level
@@ -757,13 +765,20 @@ list_playbooks() {
   printf '\n  %sGuided playbooks%s\n' "$C_AMBER" "$C_OFF"
   printf '  %srun these while the symptom is present%s\n\n' "$C_DIM" "$C_OFF"
   for id in "${PLAYBOOK_IDS[@]}"; do
-    steps="$(playbook_steps "$id" | wc -l)"
+    # tr: BSD wc pads its count to 8 columns, which lands inside the parens.
+    steps="$(playbook_steps "$id" | wc -l | tr -d ' ')"
     printf '  %2s) %s%-10s%s  %s%s (%s steps)%s\n' \
       "$i" "$C_BOLD" "$id" "$C_OFF" "" "$(playbook_title "$id")" "$steps" "$C_OFF"
     i=$((i + 1))
   done
-  printf '\n  %sThroughput and bufferbloat need a second machine running testsrv;\n' "$C_DIM"
-  printf '  those procedures stay in the README.%s\n' "$C_OFF"
+  # The multi-machine procedures are listed too: an operator on site should see
+  # the whole procedure set, not only the part the launcher can drive.
+  printf '\n  %sNeed a second machine — steps are in README.md%s\n' "$C_AMBER" "$C_OFF"
+  while IFS=$'\t' read -r title need; do
+    [[ -n "$title" ]] || continue
+    printf '   %s-%s  %s %s(%s)%s\n' \
+      "$C_DIM" "$C_OFF" "$title" "$C_DIM" "$need" "$C_OFF"
+  done < <(playbook_prose)
 }
 
 # Resolve a number or id to a playbook id; empty on miss.

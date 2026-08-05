@@ -18,6 +18,8 @@ _ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)"\s*$')
 _MD_ROW = re.compile(r"^\|\s*`([a-z0-9-]+)`\s*\|([^|]*)\|([^|]*)\|([^|]*)\|")
 # "id | title" inside PLAYBOOK_ROWS.
 _PB_ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)"\s*$')
+# TOOL_JSON=(tool tool ...) — the tools that write --dump JSON evidence.
+_JSON_TOOLS = re.compile(r"^TOOL_JSON=\(([^)]*)\)", re.MULTILINE)
 
 
 def tool_metadata() -> dict[str, tuple[str, str]]:
@@ -103,3 +105,90 @@ def test_readme_points_at_every_runnable_playbook() -> None:
     readme = (ROOT / "README.md").read_text()
     for pid in playbook_ids():
         assert f"npk playbook {pid}" in readme, f"README does not offer: npk playbook {pid}"
+
+
+# header/verdict/finished, in either the bash or the Python spelling.
+_REPORT_CALLS = {
+    "header": re.compile(r"^\s*header\s+\S|report\.header\(", re.MULTILINE),
+    "verdict": re.compile(r"^\s*verdict\s+\S|report\.verdict\(", re.MULTILINE),
+    "finished": re.compile(r"^\s*finished\s*$|report\.finished\(\)", re.MULTILINE),
+}
+
+
+def test_every_tool_opens_and_closes_its_report() -> None:
+    """The README states a report always carries its own start and end times.
+    ringcap, testsrv and testcli exec'd into their child process and never
+    reached a verdict or finished line."""
+    for name in tool_metadata():
+        src = (ROOT / "bin" / name).read_text()
+        for call, pattern in _REPORT_CALLS.items():
+            assert pattern.search(src), f"{name} never calls {call}"
+
+
+# "title | requirement" inside PLAYBOOK_PROSE_ROWS.
+_PROSE_ROW = re.compile(r'^\s*"([^|"]+)\|([^|"]*)"\s*$')
+
+
+def prose_procedures() -> list[str]:
+    """Titles of the procedures that need a second machine."""
+    text = (ROOT / "lib" / "netpack" / "playbooks.sh").read_text()
+    # Closes on a ")" at the start of a line: a title may contain one, as
+    # "Prove latency and jitter under load (bufferbloat)" does.
+    m = re.search(r"^PLAYBOOK_PROSE_ROWS=\((.*?)^\)", text, re.DOTALL | re.MULTILINE)
+    assert m, "PLAYBOOK_PROSE_ROWS not found in playbooks.sh"
+    return [
+        row.group(1).strip()
+        for line in m.group(1).splitlines()
+        if (row := _PROSE_ROW.match(line))
+    ]
+
+
+def test_prose_procedures_are_listed_and_documented() -> None:
+    """The launcher lists these so an operator sees the whole procedure set,
+    but their steps live in the README. A title that drifts leaves the operator
+    hunting for a procedure under a name the README does not use."""
+    readme = (ROOT / "README.md").read_text()
+    titles = prose_procedures()
+    assert len(titles) >= 3
+    for title in titles:
+        assert f"**{title}**" in readme, f"README has no section titled: {title}"
+
+
+def json_tools() -> list[str]:
+    """Tools that write --dump JSON, from TOOL_JSON in lib/netpack/tools.sh."""
+    text = (ROOT / "lib" / "netpack" / "tools.sh").read_text()
+    m = _JSON_TOOLS.search(text)
+    assert m, "TOOL_JSON not found in lib/netpack/tools.sh"
+    return m.group(1).split()
+
+
+def test_json_tools_are_tools_that_exist() -> None:
+    assert set(json_tools()) <= set(tool_metadata())
+
+
+def test_every_dump_payload_carries_the_required_keys() -> None:
+    """Python tools name tool and assessment_code in each payload; bash tools
+    pass them to dump_write, which supplies them. Python payloads are counted
+    per write_dump call so a tool building one per mode (mcastcheck) cannot
+    pass on a single occurrence."""
+    for name in json_tools():
+        src = (ROOT / "bin" / name).read_text()
+        py_dumps = src.count("report.write_dump(")
+        sh_dumps = len(re.findall(r"^\s*dump_write\s", src, re.MULTILINE))
+        assert py_dumps or sh_dumps, f"{name} is in TOOL_JSON but writes no dump"
+        for key in ("tool", "assessment_code"):
+            found = src.count(f'"{key}":')
+            assert found >= py_dumps, (
+                f"{name} builds {py_dumps} dump payload(s) but names {key!r} "
+                f"{found} time(s); every payload must carry it"
+            )
+
+
+def test_bash_dumping_tools_accept_the_capture_spelling() -> None:
+    """capture_run appends "--dump PATH"; getopts cannot parse it, so a bash
+    tool that skips take_dump_opt would reject its own capture arguments."""
+    for name in json_tools():
+        src = (ROOT / "bin" / name).read_text()
+        if "report.write_dump(" in src:
+            continue
+        assert "take_dump_opt" in src, f"{name} does not accept --dump"
