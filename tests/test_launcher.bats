@@ -115,12 +115,16 @@ closed_port() {
   [ "${#logs[@]}" -eq 1 ]
   grep -q "ASSESSMENT:" "${logs[0]}"
 
-  # Manifest row records the retypable command and the exit code.
+  # Manifest row records the retypable command and the exit code. portcheck is
+  # in TOOL_JSON, so capture appends the --dump it added on the tool's behalf.
+  local stamp="${logs[0]##*/}"
+  stamp="${stamp%.log}"
   local row
   row="$(grep -v '^#' "${dir}/manifest.tsv")"
   [ "$(printf '%s\n' "$row" | wc -l)" -eq 1 ]
   [ "$(printf '%s' "$row" | cut -f3)" = "2" ]
-  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port}" ]
+  [ "$(printf '%s' "$row" | cut -f5)" = "portcheck 127.0.0.1 ${port} --dump ${dir}/${stamp}.json" ]
+  [ -f "${dir}/${stamp}.json" ]
 }
 
 @test "capture auto-dumps JSON for tools that support it" {

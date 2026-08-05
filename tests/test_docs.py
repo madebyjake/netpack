@@ -138,16 +138,28 @@ def test_json_tools_are_tools_that_exist() -> None:
 
 
 def test_every_dump_payload_carries_the_required_keys() -> None:
-    """tool and assessment_code are the caller's; timestamp comes from
-    write_dump. Counted per write_dump call so a tool building one payload per
-    mode (mcastcheck) cannot pass on a single occurrence."""
+    """Python tools name tool and assessment_code in each payload; bash tools
+    pass them to dump_write, which supplies them. Python payloads are counted
+    per write_dump call so a tool building one per mode (mcastcheck) cannot
+    pass on a single occurrence."""
     for name in json_tools():
         src = (ROOT / "bin" / name).read_text()
-        dumps = src.count("report.write_dump(")
-        assert dumps, f"{name} is in TOOL_JSON but never calls report.write_dump"
+        py_dumps = src.count("report.write_dump(")
+        sh_dumps = len(re.findall(r"^\s*dump_write\s", src, re.MULTILINE))
+        assert py_dumps or sh_dumps, f"{name} is in TOOL_JSON but writes no dump"
         for key in ("tool", "assessment_code"):
             found = src.count(f'"{key}":')
-            assert found >= dumps, (
-                f"{name} builds {dumps} dump payload(s) but names {key!r} "
+            assert found >= py_dumps, (
+                f"{name} builds {py_dumps} dump payload(s) but names {key!r} "
                 f"{found} time(s); every payload must carry it"
             )
+
+
+def test_bash_dumping_tools_accept_the_capture_spelling() -> None:
+    """capture_run appends "--dump PATH"; getopts cannot parse it, so a bash
+    tool that skips take_dump_opt would reject its own capture arguments."""
+    for name in json_tools():
+        src = (ROOT / "bin" / name).read_text()
+        if "report.write_dump(" in src:
+            continue
+        assert "take_dump_opt" in src, f"{name} does not accept --dump"

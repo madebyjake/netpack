@@ -90,7 +90,7 @@ impact_note() {
 
 # Tools that can write JSON evidence with --dump. capture_run consults this to
 # collect JSON alongside the terminal log while -o capture is active.
-TOOL_JSON=(cabletest dhcpprobe discover linkstat mcastcheck)
+TOOL_JSON=(cabletest dhcpprobe discover linkstat mcastcheck portcheck webcheck)
 
 supports_dump() {
   local t

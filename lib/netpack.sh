@@ -195,6 +195,7 @@ is_uint() {
 # a DNS answer of "10" into a number.
 #
 #   dump_str KEY VALUE            string
+#   dump_opt_str KEY VALUE        string; empty VALUE becomes null
 #   dump_num KEY VALUE            number; empty VALUE becomes null (unmeasured)
 #   dump_bool KEY VALUE           boolean
 #   dump_row ARRAY s:k=v n:k=v    append one object to ARRAY
@@ -208,8 +209,47 @@ dump_begin() {
   NP_DUMP=()
 }
 
+# take_dump_opt "$@" — pull "--dump PATH" or "--dump=PATH" out of the argument
+# list, setting DUMP_PATH and NP_ARGS. Callers reset their positionals from
+# NP_ARGS before getopts, which cannot parse long options:
+#
+#   take_dump_opt "$@"
+#   set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
+#
+# The spelling matches the Python tools because capture_run appends exactly
+# this form for every tool listed in TOOL_JSON.
+NP_ARGS=()
+take_dump_opt() {
+  DUMP_PATH=""
+  NP_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dump)
+        [[ $# -ge 2 ]] || die "--dump requires a path"
+        DUMP_PATH=$2
+        shift 2
+        ;;
+      --dump=*)
+        DUMP_PATH=${1#--dump=}
+        [[ -n "$DUMP_PATH" ]] || die "--dump requires a path"
+        shift
+        ;;
+      *)
+        NP_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
 dump_str() {
   NP_DUMP+=("s" "" "$1" "$2")
+}
+
+# Optional string: empty becomes null, so "not determined" (an unknown egress
+# interface) reads differently from a measured empty value.
+dump_opt_str() {
+  NP_DUMP+=("S" "" "$1" "${2:-}")
 }
 
 dump_num() {

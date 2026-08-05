@@ -7,6 +7,7 @@ byte-identical and escaping is never hand-rolled in shell.
 
 Record kinds:
     s  string
+    S  string, or null when empty (not determined, as distinct from "")
     n  number, or null when the value is empty (unmeasured, not zero)
     b  boolean
     r  start a new object in the named array
@@ -53,6 +54,10 @@ def _boolean(value: str) -> bool:
 def _coerce(kind: str, value: str) -> Any:
     if kind == "s":
         return value
+    if kind == "S":
+        # Distinguishes "not determined" from an empty measurement, the same
+        # way an empty number is null rather than zero.
+        return value or None
     if kind == "n":
         return _number(value)
     if kind == "b":
