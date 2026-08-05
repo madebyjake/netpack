@@ -38,9 +38,10 @@ pip install -r requirements-dev.txt
 sudo apt install shellcheck bats
 # Fedora
 sudo dnf install ShellCheck bats
-# macOS — bash too: the tools use declare -g and ${var^^}, which are bash 4+,
-# and macOS ships 3.2. Homebrew's bash must come first on PATH.
-brew install shellcheck bats-core bash
+# macOS — bash because the tools use declare -g and ${var^^} (bash 4+) while
+# macOS ships 3.2, and coreutils because portcheck needs GNU timeout. Both must
+# come first on PATH.
+brew install shellcheck bats-core bash coreutils
 ```
 
 CI runs the checks on Linux and on macOS. Debian is the target; the macOS job

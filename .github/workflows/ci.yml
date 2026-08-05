@@ -55,10 +55,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # bash too: the tools use declare -g, ${var^^} and friends, which are
-      # bash 4+. macOS ships 3.2, so a dev box needs Homebrew bash as well.
-      - name: Install shellcheck, bats, and bash
-        run: brew install shellcheck bats-core bash
+      # bash: the tools use declare -g and ${var^^}, which are bash 4+, and
+      # macOS ships 3.2. coreutils: portcheck needs GNU timeout, which macOS
+      # has no equivalent of in its base system.
+      - name: Install shellcheck, bats, bash, and coreutils
+        run: brew install shellcheck bats-core bash coreutils
 
       - uses: actions/setup-python@v5
         with:
