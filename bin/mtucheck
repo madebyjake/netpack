@@ -77,14 +77,9 @@ if [[ -n "$IFACE" ]]; then
   [[ -n "$SRC" ]] || die "no IPv4 address on ${IFACE}"
   PING_BIND=(-I "$IFACE")
   VIA=$IFACE
-  # The gateway is on-link, so binding alone tests it honestly; the WAN leg
-  # needs a policy route or rp_filter can drop the replies, reading as loss.
-  # SC2119: the parser takes an optional file and reads stdin without one.
-  # shellcheck disable=SC2119
-  wan_dev="$(ip -o route get "$WAN" from "$SRC" 2>/dev/null | parse_route_dev)" || true
-  if [[ "$wan_dev" != "$IFACE" ]]; then
-    WAN_SKIP="no policy route sends ${SRC} out ${IFACE} (kernel would use ${wan_dev:-no route})"
-  fi
+  # The gateway is on-link, so binding alone tests it honestly; only the WAN
+  # leg needs a policy route.
+  WAN_SKIP="$(uplink_unroutable "$IFACE" "$SRC" "$WAN")"
 else
   GW="$(default_gateway)"
   [[ -n "$GW" ]] || die "no default gateway"

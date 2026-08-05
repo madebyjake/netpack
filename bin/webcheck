@@ -9,6 +9,7 @@ source "${ROOT}/lib/netpack.sh"
 source "${ROOT}/lib/netpack/parsers.sh"
 
 TIMEOUT=5
+IFACE=""
 
 usage() {
   cat <<'EOF'
@@ -33,16 +34,23 @@ Endpoints:
   http://detectportal.firefox.com/success.txt        expect 200, body "success"
   https://detectportal.firefox.com/success.txt       expect 200, trusted chain
 
+On a multi-homed machine, -i binds the fetches to IFACE so a chosen uplink is
+tested instead of the default route's. Portals are per-uplink: the venue Wi-Fi
+may intercept while the wired drop does not. The endpoints are off-link, so the
+run needs a policy route (ip rule) steering IFACE's address out that uplink;
+without one it exits 1 rather than reporting rp_filter drops as interception.
+
 Usage:
-  webcheck [-t SECONDS]
+  webcheck [-i IFACE] [-t SECONDS]
 
 Options:
+  -i IFACE      Bind fetches to IFACE (multi-homed)
   -t SECONDS    Per-request timeout (default: 5)
   -h, --help    Show this help
 
 Exit codes:
   0  all endpoints returned their expected responses
-  1  usage or dependency error
+  1  usage or dependency error; or -i could not bind an honest probe
   2  no HTTP response from one or more endpoints
   3  unexpected response; portal or HTTP/TLS interception suspected
 EOF
@@ -53,8 +61,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-while getopts ":t:h" opt; do
+while getopts ":i:t:h" opt; do
   case "$opt" in
+    i) IFACE=$OPTARG ;;
     t) TIMEOUT=$OPTARG ;;
     h) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
@@ -65,6 +74,15 @@ no_extra_args "$@"
 
 require_uint timeout "$TIMEOUT" 1
 require_cmd curl
+
+# The endpoints are names, and resolving them here would lean on DNS a portal
+# may be hijacking. A public address stands in for "off this uplink", which is
+# what the policy-route check actually asks.
+CURL_BIND=()
+if [[ -n "$IFACE" ]]; then
+  require_uplink "$IFACE" 1.1.1.1 >/dev/null
+  CURL_BIND=(--interface "$IFACE")
+fi
 
 DIR="$(private_tmpdir webcheck)"
 cleanup() { rm -rf "$DIR"; }
@@ -91,7 +109,8 @@ probe() {
   local url=$1 want_status=$2 want_body=$3
   local body="${DIR}/body" out status redirect got_body
   echo "${url}"
-  if ! out="$(curl -4 -s -m "$TIMEOUT" -o "$body" -D "${DIR}/headers" \
+  if ! out="$(curl -4 "${CURL_BIND[@]+"${CURL_BIND[@]}"}" -s -m "$TIMEOUT" \
+      -o "$body" -D "${DIR}/headers" \
       -w '%{http_code}\t%{redirect_url}' "$url")"; then
     echo "  $(color_status bad "no response (connect failure, DNS failure, or timeout)")"
     FAILED=$((FAILED + 1))
@@ -124,7 +143,8 @@ probe_tls() {
   local body="${DIR}/body" verr="${DIR}/tlsverbose" out issuer got_body
   local rc=0
   echo "${url}"
-  out="$(curl -4 -sv -m "$TIMEOUT" -o "$body" -D "${DIR}/headers" \
+  out="$(curl -4 "${CURL_BIND[@]+"${CURL_BIND[@]}"}" -sv -m "$TIMEOUT" \
+      -o "$body" -D "${DIR}/headers" \
       -w '%{http_code}' "$url" 2>"$verr")" || rc=$?
   issuer="$(grep -m1 -i 'issuer:' "$verr" | sed -e 's/^\*[[:space:]]*//' || true)"
   if (( rc == 0 )); then
@@ -157,7 +177,11 @@ probe_tls() {
 
 header webcheck
 echo "timeout: ${TIMEOUT}s per request  (plain HTTP by design; redirects not followed)"
-multihomed_note ""
+if [[ -n "$IFACE" ]]; then
+  multihomed_note "${IFACE} (bound with -i)"
+else
+  multihomed_note "" "pass -i IFACE to test another uplink"
+fi
 echo
 echo "=== probes ==="
 probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""

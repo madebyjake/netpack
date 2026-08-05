@@ -112,6 +112,43 @@ via_for() {
   fi
 }
 
+# uplink_unroutable IFACE SRC TARGET — empty when a policy route steers SRC out
+# IFACE toward TARGET; otherwise a reason naming the interface the kernel would
+# use instead.
+#
+# This is the honesty check for every -i binding. Binding a probe to an uplink
+# sets its source address, but replies follow the main routing table unless an
+# `ip rule` steers that address back out the same interface. Without one,
+# rp_filter drops the replies and the tool reads it as loss, blocking, or a
+# portal — evidence about the wrong thing.
+uplink_unroutable() {
+  local iface=$1 src=$2 target=$3 dev
+  dev="$(ip -o route get "$target" from "$src" 2>/dev/null | parse_route_dev)" || true
+  if [[ "$dev" != "$iface" ]]; then
+    printf 'no policy route sends %s out %s (kernel would use %s)\n' \
+      "$src" "$iface" "${dev:-no route}"
+  fi
+}
+
+# require_uplink IFACE TARGET — validate IFACE, print its source address, and
+# die when probes bound to it could not reach TARGET honestly.
+#
+# For tools whose every target is off-link, an unroutable binding makes the
+# whole run meaningless, so this exits rather than reporting. splitloss and
+# mtucheck call uplink_unroutable directly instead: their gateway leg is
+# on-link and stays honest, so only the WAN leg is dropped.
+require_uplink() {
+  local iface=$1 target=$2 src reason
+  validate_iface "$iface"
+  src="$(iface_ipv4 "$iface")"
+  [[ -n "$src" ]] || die "no IPv4 address on ${iface}"
+  reason="$(uplink_unroutable "$iface" "$src" "$target")"
+  if [[ -n "$reason" ]]; then
+    die "cannot probe via ${iface}: ${reason}; add an ip rule for ${src}, or run without -i"
+  fi
+  printf '%s\n' "$src"
+}
+
 # "iface<TAB>cidr" rows for every global IPv4 address on the system.
 global_ifaces() {
   ip -o -4 addr show scope global 2>/dev/null | parse_global_ifaces || true
