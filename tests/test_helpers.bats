@@ -224,6 +224,121 @@ ASSESSMENT: both targets were clean." ]
   [ "$output" = "0%" ]
 }
 
+# --- JSON evidence ------------------------------------------------------------
+
+@test "dump_write produces the required keys" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_str gateway 192.168.1.1
+  run dump_write "$out" splitloss 2
+  [ "$status" -eq 0 ]
+  # Path only compared loosely: TMPDIR may end in a slash, and the writer
+  # normalizes the doubled separator out of the path it reports.
+  [[ "$output" == "dump: "*"/d.json" ]]
+  [ -f "$out" ]
+  run python3 -c "import json;d=json.load(open('${out}'));print(d['tool'],d['assessment_code'],'timestamp' in d)"
+  [ "$output" = "splitloss 2 True" ]
+}
+
+@test "dump keeps declared types apart" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_str answer 10
+  dump_num count 10
+  dump_bool interrupted false
+  dump_write "$out" udp-loss 0 >/dev/null
+  run python3 -c "
+import json
+d = json.load(open('${out}'))
+print(repr(d['answer']), repr(d['count']), repr(d['interrupted']))"
+  [ "$output" = "'10' 10 False" ]
+}
+
+@test "an unmeasured number dumps as null, not zero" {
+  # A target that could not be measured must not read as clean.
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_num wan_loss_pct ""
+  dump_write "$out" splitloss 1 >/dev/null
+  run python3 -c "import json;print(json.load(open('${out}'))['wan_loss_pct'] is None)"
+  [ "$output" = "True" ]
+}
+
+@test "dump_row builds an array of objects in order" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_row targets s:name=gateway n:loss_pct=0
+  dump_row targets s:name=wan n:loss_pct=4.2
+  dump_write "$out" splitloss 3 >/dev/null
+  run python3 -c "
+import json
+t = json.load(open('${out}'))['targets']
+print([r['name'] for r in t], [r['loss_pct'] for r in t])"
+  [ "$output" = "['gateway', 'wan'] [0, 4.2]" ]
+}
+
+@test "dump_row values may contain the delimiters" {
+  # A BPF filter or an rdata field carries ':' and '='; only the first of each
+  # is a delimiter.
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_row probes "s:url=http://example.com/x?a=1&b=2" "s:note=host:port"
+  dump_write "$out" webcheck 0 >/dev/null
+  run python3 -c "
+import json
+r = json.load(open('${out}'))['probes'][0]
+print(r['url']); print(r['note'])"
+  [ "${lines[0]}" = "http://example.com/x?a=1&b=2" ]
+  [ "${lines[1]}" = "host:port" ]
+}
+
+@test "dump escapes values that would break hand-rolled JSON" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_str filter 'tcp port 53 and "quoted" \back'
+  dump_write "$out" ringcap 0 >/dev/null
+  run python3 -c "import json;print(json.load(open('${out}'))['filter'])"
+  [ "$output" = 'tcp port 53 and "quoted" \back' ]
+}
+
+@test "dump_begin clears fields from a previous payload" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_str stale yes
+  dump_begin
+  dump_str fresh yes
+  dump_write "$out" doctor 0 >/dev/null
+  run python3 -c "import json;d=json.load(open('${out}'));print('stale' in d, d.get('fresh'))"
+  [ "$output" = "False yes" ]
+}
+
+@test "dump_write reports a bad number instead of writing junk" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  dump_num loss_pct "n/a"
+  run dump_write "$out" splitloss 0
+  [ "$status" -ne 0 ]
+  [ ! -f "$out" ]
+}
+
+@test "dump_write creates parent directories" {
+  local out="${STUB_DIR}/nested/deeper/d.json"
+  dump_begin
+  dump_str tool_ran yes
+  run dump_write "$out" doctor 0
+  [ "$status" -eq 0 ]
+  [ -f "$out" ]
+}
+
+@test "an empty payload still records the required keys" {
+  local out="${STUB_DIR}/d.json"
+  dump_begin
+  run dump_write "$out" doctor 0
+  [ "$status" -eq 0 ]
+  run python3 -c "import json;d=json.load(open('${out}'));print(sorted(d))"
+  [ "$output" = "['assessment_code', 'timestamp', 'tool']" ]
+}
+
 # --- route and address helpers ------------------------------------------------
 
 @test "default_gateway picks the preferred-metric default route" {
