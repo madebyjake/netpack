@@ -765,7 +765,8 @@ list_playbooks() {
   printf '\n  %sGuided playbooks%s\n' "$C_AMBER" "$C_OFF"
   printf '  %srun these while the symptom is present%s\n\n' "$C_DIM" "$C_OFF"
   for id in "${PLAYBOOK_IDS[@]}"; do
-    steps="$(playbook_steps "$id" | wc -l)"
+    # tr: BSD wc pads its count to 8 columns, which lands inside the parens.
+    steps="$(playbook_steps "$id" | wc -l | tr -d ' ')"
     printf '  %2s) %s%-10s%s  %s%s (%s steps)%s\n' \
       "$i" "$C_BOLD" "$id" "$C_OFF" "" "$(playbook_title "$id")" "$steps" "$C_OFF"
     i=$((i + 1))
