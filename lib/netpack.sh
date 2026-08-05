@@ -186,6 +186,80 @@ is_uint() {
   [[ "${1:-}" =~ ^[0-9]+$ ]]
 }
 
+# --- JSON evidence ------------------------------------------------------------
+#
+# Tools accumulate typed fields here, and lib/netpack/dump.py serializes them
+# through netpack.report.write_dump. Serialization is not hand-rolled in shell:
+# escaping a hostname or a BPF filter into JSON by hand is how a dump silently
+# stops parsing. Types are explicit rather than inferred, because guessing turns
+# a DNS answer of "10" into a number.
+#
+#   dump_str KEY VALUE            string
+#   dump_num KEY VALUE            number; empty VALUE becomes null (unmeasured)
+#   dump_bool KEY VALUE           boolean
+#   dump_row ARRAY s:k=v n:k=v    append one object to ARRAY
+#   dump_write PATH TOOL CODE     write the payload
+#
+# An empty number is null on purpose: a target that could not be measured must
+# not land in the evidence as 0, which reads as clean.
+NP_DUMP=()
+
+dump_begin() {
+  NP_DUMP=()
+}
+
+dump_str() {
+  NP_DUMP+=("s" "" "$1" "$2")
+}
+
+dump_num() {
+  NP_DUMP+=("n" "" "$1" "${2:-}")
+}
+
+dump_bool() {
+  NP_DUMP+=("b" "" "$1" "$2")
+}
+
+# dump_row ARRAY TYPE:KEY=VALUE ... — VALUE may contain ':' and '=' since only
+# the first of each is a delimiter.
+dump_row() {
+  local array=$1 field kind rest key value
+  shift
+  NP_DUMP+=("r" "$array" "" "")
+  for field in "$@"; do
+    kind=${field%%:*}
+    rest=${field#*:}
+    key=${rest%%=*}
+    value=${rest#*=}
+    NP_DUMP+=("$kind" "$array" "$key" "$value")
+  done
+}
+
+# dump_write PATH TOOL CODE — serialize the accumulated fields to PATH. Prints
+# "dump: PATH" on success; a failure warns and returns non-zero without killing
+# the tool, since the terminal report is the primary evidence.
+# Emit the accumulated fields NUL-separated. Nothing at all when there are
+# none: printf with no arguments still writes one empty field, which would
+# reach the builder as a truncated record.
+dump_fields() {
+  (( ${#NP_DUMP[@]} )) || return 0
+  printf '%s\0' "${NP_DUMP[@]}"
+}
+
+dump_write() {
+  local path=$1 tool=$2 code=$3 out
+  if ! command -v python3 >/dev/null 2>&1; then
+    warning "python3 not found; --dump skipped" >&2
+    return 1
+  fi
+  if ! out="$(dump_fields \
+      | PYTHONPATH="$(netpack_root)/lib" python3 -m netpack.dump "$path" "$tool" "$code")"; then
+    warning "could not write dump to ${path}" >&2
+    return 1
+  fi
+  printf 'dump: %s\n' "$out"
+}
+
 # Validate an unsigned-integer option value within [MIN, MAX]; die otherwise.
 # Usage: require_uint LABEL VALUE MIN [MAX]
 require_uint() {
