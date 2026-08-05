@@ -42,8 +42,8 @@ Analysis hints: tcp.analysis.retransmission, tcp.analysis.duplicate_ack,
 icmp destination-unreachable.
 
 Exit codes:
-  0  tcpdump exited normally
-  1  usage, dependency, or permission error
+  0  ring stopped with capture files retained (Ctrl-C is the normal stop)
+  1  usage, dependency, or permission error; tcpdump failed, or no files written
 EOF
 }
 
@@ -87,10 +87,47 @@ echo "filter: ${FILT:-<none>}"
 echo "Note wall-clock time when the symptom occurs. Stop with Ctrl-C."
 
 cd "$ABS_DIR"
+# Not exec: the run has to come back here to close the report, so the evidence
+# carries its own end time like every other tool. Ctrl-C reaches tcpdump
+# through the process group; bash defers this trap until it exits.
+INTERRUPTED=0
+trap 'INTERRUPTED=1' INT
+RC=0
 # Stay root after opening the device so -C rotation can create files in this
 # root-owned 0700 directory (Debian/Ubuntu tcpdump otherwise drops to tcpdump).
 if [[ -n "$FILT" ]]; then
-  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap" "$FILT"
+  tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap" "$FILT" || RC=$?
 else
-  exec tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap"
+  tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap" || RC=$?
 fi
+trap - INT
+
+# tcpdump killed by SIGINT reports 128+2; Ctrl-C is the normal stop here.
+if (( INTERRUPTED )) || (( RC == 130 )); then
+  RC=0
+fi
+
+FILES="$(find . -maxdepth 1 -name 'cap.pcap*' -type f | wc -l | tr -d ' ')"
+echo
+section "ring"
+if (( FILES > 0 )); then
+  printf '  %s file(s) in %s\n' "$FILES" "$ABS_DIR"
+else
+  echo "  $(color_status warn "no capture files written")"
+fi
+
+if (( RC != 0 )); then
+  verdict "tcpdump exited ${RC} before the ring was stopped." \
+    "Check interface state, disk space, and the BPF filter syntax."
+  finished
+  exit 1
+fi
+if (( FILES == 0 )); then
+  verdict "capture stopped with no files written." \
+    "Confirm traffic was present on ${IFACE} and that the filter matches it."
+  finished
+  exit 1
+fi
+verdict "capture ring stopped; ${FILES} file(s) retained in ${ABS_DIR}." \
+  "Open the file matching the symptom's wall-clock time in Wireshark or tshark."
+finished

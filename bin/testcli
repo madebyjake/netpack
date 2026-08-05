@@ -53,6 +53,7 @@ Options:
 Exit codes:
   0  iperf3 client completed successfully
   1  usage, dependency, or iperf3 error
+  130  interrupted; the printed figures cover the completed portion only
 EOF
 }
 
@@ -117,13 +118,31 @@ header testcli
 VIA="$(via_for "$HOST")"
 echo "host: ${HOST}  port: ${PORT}  duration: ${DURATION}s  direction: ${DIRECTION}${VIA:+  via: ${VIA}}"
 multihomed_note "$VIA"
+# Not exec: the run has to come back here to close the report, and to map
+# iperf3's exit status onto the documented codes.
+RC=0
 if [[ "$UDP" -eq 1 ]]; then
   echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}  streams ${STREAMS}"
   warning "generates significant traffic"
-  exec iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" \
-    "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION"
+  iperf3 -c "$HOST" -p "$PORT" -u -b "$BANDWIDTH" -l "$LENGTH" \
+    "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION" || RC=$?
 else
   echo "mode: TCP  streams ${STREAMS}"
   warning "generates significant traffic"
-  exec iperf3 -c "$HOST" -p "$PORT" "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION"
+  iperf3 -c "$HOST" -p "$PORT" "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION" || RC=$?
 fi
+
+if (( RC == 130 )); then
+  verdict "run interrupted; the figures above cover the completed portion only." \
+    "Re-run for a full window before treating the throughput as evidence."
+  finished
+  exit 130
+fi
+if (( RC != 0 )); then
+  verdict "iperf3 exited ${RC}." \
+    "Confirm testsrv is running on ${HOST}:${PORT} and the port is not filtered."
+  finished
+  exit 1
+fi
+verdict "iperf3 ${DIRECTION} run against ${HOST}:${PORT} completed."
+finished

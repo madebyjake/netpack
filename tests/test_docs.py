@@ -107,6 +107,24 @@ def test_readme_points_at_every_runnable_playbook() -> None:
         assert f"npk playbook {pid}" in readme, f"README does not offer: npk playbook {pid}"
 
 
+# header/verdict/finished, in either the bash or the Python spelling.
+_REPORT_CALLS = {
+    "header": re.compile(r"^\s*header\s+\S|report\.header\(", re.MULTILINE),
+    "verdict": re.compile(r"^\s*verdict\s+\S|report\.verdict\(", re.MULTILINE),
+    "finished": re.compile(r"^\s*finished\s*$|report\.finished\(\)", re.MULTILINE),
+}
+
+
+def test_every_tool_opens_and_closes_its_report() -> None:
+    """The README states a report always carries its own start and end times.
+    ringcap, testsrv and testcli exec'd into their child process and never
+    reached a verdict or finished line."""
+    for name in tool_metadata():
+        src = (ROOT / "bin" / name).read_text()
+        for call, pattern in _REPORT_CALLS.items():
+            assert pattern.search(src), f"{name} never calls {call}"
+
+
 def json_tools() -> list[str]:
     """Tools that write --dump JSON, from TOOL_JSON in lib/netpack/tools.sh."""
     text = (ROOT / "lib" / "netpack" / "tools.sh").read_text()
