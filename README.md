@@ -32,6 +32,43 @@ Update later with `git -C ~/netpack pull`; `make uninstall` removes the links.
 
 Alternatively for Scapy only: `pip install -r ~/netpack/requirements.txt`
 
+### Pinning to a release
+
+The clone above tracks `main`, which moves. Pin a field box to a release tag
+instead, so tool behaviour and evidence semantics stay fixed for the duration of
+an engagement:
+
+```bash
+# Clone at a release
+git clone --branch 0.7.0 https://github.com/madebyjake/netpack.git ~/netpack
+
+# Or move an existing clone onto one
+git -C ~/netpack fetch --tags
+git -C ~/netpack checkout 0.7.0
+
+npk --version          # confirm what is installed
+```
+
+Tags are the bare version (`0.7.0`) and match the GitHub release named
+`netpack-vX.Y.Z-beta`. Because `make install` symlinks rather than copies,
+checking out a different tag switches the installed tools immediately — there is
+nothing to re-install.
+
+A tag checkout leaves the clone on a detached HEAD, so `git pull` no longer
+applies. Move to a later release with `fetch --tags` then `checkout <tag>`, and
+return to tracking the branch with `git -C ~/netpack checkout main`.
+
+List what is available with `git -C ~/netpack tag -l` or `gh release list`.
+Every release is marked pre-release until 1.0.0, which means GitHub's
+`/releases/latest` endpoint returns 404 — do not script against it.
+
+For a machine without git, a release tarball carries the same tree:
+
+```bash
+curl -fsSL https://github.com/madebyjake/netpack/archive/refs/tags/0.7.0.tar.gz \
+  | tar -xz -C ~ && mv ~/netpack-0.7.0 ~/netpack
+```
+
 Developing or running the test suite? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Launcher
