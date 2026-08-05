@@ -40,8 +40,8 @@ Client examples:
   # or: iperf3 -c <host> -p 5201 -t 30
 
 Exit codes:
-  0  iperf3 exited normally
-  1  usage, dependency, or firewall error
+  0  server stopped normally (Ctrl-C is the normal stop)
+  1  usage, dependency, or firewall error; iperf3 failed to run
 EOF
 }
 
@@ -113,4 +113,21 @@ trap close_port EXIT INT TERM
 open_port
 header testsrv
 echo "iperf3 listening on port ${PORT} (Ctrl-C to stop)"
-iperf3 -s -p "$PORT"
+# Ctrl-C is the normal stop for a server; the report still has to close so the
+# evidence carries its own end time.
+INTERRUPTED=0
+trap 'INTERRUPTED=1' INT
+RC=0
+iperf3 -s -p "$PORT" || RC=$?
+if (( INTERRUPTED )) || (( RC == 130 )); then
+  RC=0
+fi
+
+if (( RC != 0 )); then
+  verdict "iperf3 exited ${RC}." \
+    "Check that port ${PORT} is free and reachable from the client."
+  finished
+  exit 1
+fi
+verdict "iperf3 server on port ${PORT} stopped."
+finished
