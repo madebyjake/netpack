@@ -123,6 +123,40 @@ without `-y`.
 Print the report and write `--dump` anyway, and say in the assessment that the
 run was cut short.
 
+## Commits and branches
+
+Commits follow [Conventional Commits
+1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification):
+`type(scope): subject`. Scope is the tool or area it touches; omit it for
+repo-wide changes.
+
+```
+feat(mtucheck): -i binds DF probes to an uplink and tests its gateway
+fix(dnscheck): reject record types dig would silently query as A
+docs(readme): multi-homed behavior and -i in the production notes
+chore(version): bump version to 0.7.0
+```
+
+Branches follow [Conventional Branch
+1.0.0](https://conventionalbranch.org/v1.0.0/#specification):
+`<type>/<description>`, where type is `feature`, `bugfix`, `hotfix`, `release`,
+or `chore`, and the description is lowercase alphanumeric and hyphens.
+
+```
+bugfix/discover-dump-assessment-code
+feature/bash-json-dump
+chore/document-commit-conventions
+```
+
+One logical change per branch: a `chore:` commit does not belong on a `bugfix/`
+branch. Branches created before this was adopted (`feat/menu-polish`,
+`release-0.7.0`) do not match and are not precedent.
+
+Do not add `Co-Authored-By` or other trailers.
+
+Comments, commit messages, and documentation stay concise and neutral —
+state the fact, not the rationale around it.
+
 ## Releasing
 
 The version lives in `lib/netpack/__init__.py` and nowhere else; the launcher
