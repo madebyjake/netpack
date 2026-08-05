@@ -55,8 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck and bats
-        run: brew install shellcheck bats-core
+      # bash too: the tools use declare -g, ${var^^} and friends, which are
+      # bash 4+. macOS ships 3.2, so a dev box needs Homebrew bash as well.
+      - name: Install shellcheck, bats, and bash
+        run: brew install shellcheck bats-core bash
 
       - uses: actions/setup-python@v5
         with:
@@ -70,7 +72,8 @@ jobs:
       - name: Record the userland under test
         run: |
           make --version | head -1
-          /bin/bash --version | head -1
+          echo "system:  $(/bin/bash --version | head -1)"
+          echo "on PATH: $(bash --version | head -1)"
 
       - name: shellcheck
         run: make shellcheck
