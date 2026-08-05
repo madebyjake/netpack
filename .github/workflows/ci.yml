@@ -45,3 +45,48 @@ jobs:
 
       - name: smoke
         run: make smoke
+
+  # Debian is the target; macOS is the development platform, and its older
+  # userland is what catches portability slips — GNU Make 3.81, bash 3.2, and
+  # BSD stat all behave differently from the Linux job above. Not a required
+  # check: a macOS-only failure must not block a release.
+  check-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck and bats
+        run: brew install shellcheck bats-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Record the userland under test
+        run: |
+          make --version | head -1
+          /bin/bash --version | head -1
+
+      - name: shellcheck
+        run: make shellcheck
+
+      - name: ruff
+        run: make ruff
+
+      - name: py_compile
+        run: make compile
+
+      - name: pytest
+        run: make test
+
+      # Tests needing /sys/class/net skip themselves here.
+      - name: bats
+        run: make bats
+
+      - name: smoke
+        run: make smoke
