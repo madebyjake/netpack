@@ -265,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print_report(ssdp, mdns, args.timeout, iface_label, ssdp_err, mdns_err)
 
+    # Zero responders is a valid result, not a condition. Held in a variable so
+    # the dump records the returned code rather than re-deriving it.
+    code = EXIT_OK
+
     if args.dump:
         payload = {
             "tool": "discover",
@@ -287,12 +291,13 @@ def main(argv: list[str] | None = None) -> int:
                 for ip, s in mdns.items()
             ],
             "host_count": len(set(ssdp) | set(mdns)),
+            "assessment_code": code,
         }
         path = report.write_dump(args.dump, payload)
         print(f"dump: {path}")
 
     report.finished()
-    return EXIT_OK
+    return code
 
 
 if __name__ == "__main__":
