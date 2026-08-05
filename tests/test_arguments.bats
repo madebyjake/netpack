@@ -53,6 +53,8 @@ takes_positional() {
 @test "unknown flags are rejected before the network is touched" {
   # A rejection that needed a route or a resolver would hang in the field and
   # would not run in CI. Bounded so a regression fails rather than stalls.
+  # Without timeout the bound cannot be applied and the check proves nothing.
+  command -v timeout >/dev/null || skip "needs GNU timeout"
   for t in "${TOOLS[@]}"; do
     run timeout 5 "${REPO}/bin/${t}" --definitely-not-a-flag
     if [ "$status" -eq 124 ]; then
