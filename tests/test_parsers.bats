@@ -203,6 +203,34 @@ setup() {
 
 # --- segscan -----------------------------------------------------------------
 
+@test "classify_sweep calls a prefix wider than the threshold large" {
+  run classify_sweep 16 22
+  [ "$output" = "large" ]
+  run classify_sweep 21 22
+  [ "$output" = "large" ]
+}
+
+@test "classify_sweep treats the threshold itself as ok" {
+  run classify_sweep 22 22
+  [ "$output" = "ok" ]
+  run classify_sweep 24 22
+  [ "$output" = "ok" ]
+}
+
+@test "classify_sweep reads a prefix with a leading zero as decimal" {
+  run classify_sweep 024 22
+  [ "$output" = "ok" ]
+}
+
+@test "classify_sweep refuses to size an unreadable prefix" {
+  # Fails closed: the guard cannot be applied, so the sweep must not proceed
+  # unconfirmed with the protection silently absent.
+  for bad in "" "-" "abc" "24/8"; do
+    run classify_sweep "$bad" 22
+    [ "$output" = "unsized" ] || { echo "sized: [$bad] -> $output"; return 1; }
+  done
+}
+
 @test "arp_duplicates flags only IPs claimed by two or more MACs" {
   # .10 has two MACs and .30 has three: real conflicts. .20 appears twice with
   # the same MAC in different case (an arp-scan retry), which is one host.
