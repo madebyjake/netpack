@@ -125,6 +125,35 @@ def test_every_tool_opens_and_closes_its_report() -> None:
             assert pattern.search(src), f"{name} never calls {call}"
 
 
+# "title | requirement" inside PLAYBOOK_PROSE_ROWS.
+_PROSE_ROW = re.compile(r'^\s*"([^|"]+)\|([^|"]*)"\s*$')
+
+
+def prose_procedures() -> list[str]:
+    """Titles of the procedures that need a second machine."""
+    text = (ROOT / "lib" / "netpack" / "playbooks.sh").read_text()
+    # Closes on a ")" at the start of a line: a title may contain one, as
+    # "Prove latency and jitter under load (bufferbloat)" does.
+    m = re.search(r"^PLAYBOOK_PROSE_ROWS=\((.*?)^\)", text, re.DOTALL | re.MULTILINE)
+    assert m, "PLAYBOOK_PROSE_ROWS not found in playbooks.sh"
+    return [
+        row.group(1).strip()
+        for line in m.group(1).splitlines()
+        if (row := _PROSE_ROW.match(line))
+    ]
+
+
+def test_prose_procedures_are_listed_and_documented() -> None:
+    """The launcher lists these so an operator sees the whole procedure set,
+    but their steps live in the README. A title that drifts leaves the operator
+    hunting for a procedure under a name the README does not use."""
+    readme = (ROOT / "README.md").read_text()
+    titles = prose_procedures()
+    assert len(titles) >= 3
+    for title in titles:
+        assert f"**{title}**" in readme, f"README has no section titled: {title}"
+
+
 def json_tools() -> list[str]:
     """Tools that write --dump JSON, from TOOL_JSON in lib/netpack/tools.sh."""
     text = (ROOT / "lib" / "netpack" / "tools.sh").read_text()

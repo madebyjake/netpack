@@ -771,8 +771,14 @@ list_playbooks() {
       "$i" "$C_BOLD" "$id" "$C_OFF" "" "$(playbook_title "$id")" "$steps" "$C_OFF"
     i=$((i + 1))
   done
-  printf '\n  %sThroughput and bufferbloat need a second machine running testsrv;\n' "$C_DIM"
-  printf '  those procedures stay in the README.%s\n' "$C_OFF"
+  # The multi-machine procedures are listed too: an operator on site should see
+  # the whole procedure set, not only the part the launcher can drive.
+  printf '\n  %sNeed a second machine — steps are in README.md%s\n' "$C_AMBER" "$C_OFF"
+  while IFS=$'\t' read -r title need; do
+    [[ -n "$title" ]] || continue
+    printf '   %s-%s  %s %s(%s)%s\n' \
+      "$C_DIM" "$C_OFF" "$title" "$C_DIM" "$need" "$C_OFF"
+  done < <(playbook_prose)
 }
 
 # Resolve a number or id to a playbook id; empty on miss.
