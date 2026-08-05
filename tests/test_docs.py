@@ -18,6 +18,8 @@ _ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|(.*)"\s*$')
 _MD_ROW = re.compile(r"^\|\s*`([a-z0-9-]+)`\s*\|([^|]*)\|([^|]*)\|([^|]*)\|")
 # "id | title" inside PLAYBOOK_ROWS.
 _PB_ROW = re.compile(r'^\s*"([a-z0-9-]+)\s*\|([^|]*)"\s*$')
+# TOOL_JSON=(tool tool ...) — the tools that write --dump JSON evidence.
+_JSON_TOOLS = re.compile(r"^TOOL_JSON=\(([^)]*)\)", re.MULTILINE)
 
 
 def tool_metadata() -> dict[str, tuple[str, str]]:
@@ -103,3 +105,31 @@ def test_readme_points_at_every_runnable_playbook() -> None:
     readme = (ROOT / "README.md").read_text()
     for pid in playbook_ids():
         assert f"npk playbook {pid}" in readme, f"README does not offer: npk playbook {pid}"
+
+
+def json_tools() -> list[str]:
+    """Tools that write --dump JSON, from TOOL_JSON in lib/netpack/tools.sh."""
+    text = (ROOT / "lib" / "netpack" / "tools.sh").read_text()
+    m = _JSON_TOOLS.search(text)
+    assert m, "TOOL_JSON not found in lib/netpack/tools.sh"
+    return m.group(1).split()
+
+
+def test_json_tools_are_tools_that_exist() -> None:
+    assert set(json_tools()) <= set(tool_metadata())
+
+
+def test_every_dump_payload_carries_the_required_keys() -> None:
+    """tool and assessment_code are the caller's; timestamp comes from
+    write_dump. Counted per write_dump call so a tool building one payload per
+    mode (mcastcheck) cannot pass on a single occurrence."""
+    for name in json_tools():
+        src = (ROOT / "bin" / name).read_text()
+        dumps = src.count("report.write_dump(")
+        assert dumps, f"{name} is in TOOL_JSON but never calls report.write_dump"
+        for key in ("tool", "assessment_code"):
+            found = src.count(f'"{key}":')
+            assert found >= dumps, (
+                f"{name} builds {dumps} dump payload(s) but names {key!r} "
+                f"{found} time(s); every payload must carry it"
+            )
