@@ -142,6 +142,11 @@ uses `lib/netpack.sh`, Python uses `netpack.report`; keep the two in step.
 **Colour.** Only when stdout is a TTY and `NO_COLOR` is unset, so redirected
 evidence stays plain text.
 
+**Locale.** `lib/netpack.sh` exports `LC_ALL=C`; Python subprocesses pass
+`net.C_LOCALE`. Both the decimal separator and the English strings the parsers
+match depend on it — under a comma-decimal locale, 1.5% loss became `1,5`, which
+`classify_loss_set` read as 1 and reported clean.
+
 **Safety.** Tools that generate meaningful load carry the `loud` tag and an
 impact line. Anything that could disrupt production traffic must be guarded in
 code, not just documented — see `mcastcheck send` refusing Dante's default

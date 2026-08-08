@@ -13,6 +13,12 @@ from pathlib import Path
 
 _IFACE_RE = re.compile(r"^[A-Za-z0-9._@:+=-]+$")
 
+# Child processes inherit this so their output stays parseable: link.py matches
+# English strings ("Speed:", "Link detected:", "EEE status:"), and a localized
+# ethtool or iw stops matching. Mirrors the LC_ALL=C that lib/netpack.sh exports
+# for the bash tools.
+C_LOCALE = {**os.environ, "LC_ALL": "C"}
+
 
 class NetError(Exception):
     """Raised for interface or privilege problems."""
@@ -75,6 +81,7 @@ def default_iface() -> str:
             ["ip", "-o", "route", "get", "1.1.1.1"],
             stderr=subprocess.DEVNULL,
             text=True,
+            env=C_LOCALE,
         )
         parts = out.split()
         if "dev" in parts:
@@ -104,6 +111,7 @@ def iface_ipv4(iface: str) -> str | None:
             ["ip", "-o", "-4", "addr", "show", "dev", iface],
             stderr=subprocess.DEVNULL,
             text=True,
+            env=C_LOCALE,
         )
     except (
         subprocess.CalledProcessError,

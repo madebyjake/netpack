@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import cli, link, report
-from netpack.net import NetError, is_wireless, resolve_iface
+from netpack.net import C_LOCALE, NetError, is_wireless, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -68,7 +68,9 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
     ethtool refuses, its own message is the evidence for why, and guessing on
     the operator's behalf is worse than quoting it."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, env=C_LOCALE
+        )
     except (FileNotFoundError, OSError) as exc:
         return 127, "", str(exc)
     return proc.returncode, proc.stdout, proc.stderr

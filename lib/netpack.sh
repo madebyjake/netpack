@@ -3,6 +3,20 @@
 # Interface naming/validation rules are mirrored in lib/netpack/net.py; keep the
 # two in sync. Report helpers here mirror lib/netpack/report.py.
 
+# Every tool sources this, so it is where the locale is pinned. Two things break
+# without it, both silently:
+#
+#   awk and printf format decimals per LC_NUMERIC. Under a comma-decimal locale
+#   1.5% loss becomes "1,5", which classify_loss_set reads as 1 and reports as
+#   clean, and which dump_num rejects as not a number.
+#
+#   The parsers match English output — "packet loss", "rtt min/avg/max",
+#   "Query time:", "Speed:". A localized ping or dig stops matching.
+#
+# C rather than C.UTF-8: macOS has no C.UTF-8. Non-ASCII in SSIDs and vendor
+# strings passes through as bytes, which is all these tools do with it.
+export LC_ALL=C
+
 netpack_root() {
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
 from netpack import cli, link, report, verdicts
-from netpack.net import NetError, is_wireless, resolve_iface
+from netpack.net import C_LOCALE, NetError, is_wireless, resolve_iface
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -124,7 +124,9 @@ def read_carrier_changes(iface: str) -> int:
 def _run(cmd: list[str]) -> str | None:
     """Command stdout, or None when it is missing or exits non-zero."""
     try:
-        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+        return subprocess.check_output(
+            cmd, stderr=subprocess.DEVNULL, text=True, env=C_LOCALE
+        )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return None
 

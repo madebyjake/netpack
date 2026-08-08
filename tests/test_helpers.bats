@@ -594,6 +594,54 @@ wt0	100.100.9.10/24" ]
   [[ "$output" == *"finished:"* ]]
 }
 
+# --- locale ------------------------------------------------------------------
+#
+# awk and printf format decimals per LC_NUMERIC. Under a comma-decimal locale a
+# loss of 1.5% became "1,5", which classify_loss_set read as 1 and reported as
+# clean, and which dump_num rejected as not a number.
+
+# Run SCRIPT under LOCALE with the inner shell's stderr discarded. A runner
+# without de_DE installed makes bash warn "setlocale: cannot change locale" at
+# startup, before the script runs, so the redirect belongs here rather than
+# inside SCRIPT — and bats folds stderr into $output.
+#
+# The locale falling back to C on such a runner costs nothing: the first test
+# asserts the export itself, which holds either way.
+in_locale() {
+  env LC_ALL="$1" bash -c "$2" 2>/dev/null
+}
+
+@test "sourcing netpack.sh pins LC_ALL to C" {
+  run in_locale de_DE.UTF-8 "source '${REPO}/lib/netpack.sh'; printf '%s' \"\$LC_ALL\""
+  [ "$output" = "C" ]
+}
+
+@test "decimal formatting stays dot-separated under a comma-decimal locale" {
+  run in_locale de_DE.UTF-8 \
+    "source '${REPO}/lib/netpack.sh'; awk 'BEGIN { printf \"%.1f\", 1.5 }'"
+  [ "$output" = "1.5" ]
+}
+
+@test "loss above the threshold is not classified as clean under that locale" {
+  run in_locale de_DE.UTF-8 "
+    source '${REPO}/lib/netpack/parsers.sh'
+    source '${REPO}/lib/netpack.sh'
+    loss=\"\$(awk -v f=3 -v c=200 'BEGIN { printf \"%.1f\", f * 100 / c }')\"
+    classify_loss_set 1 \"\$loss\""
+  # 3 lost of 200 is 1.5%, over the 1% threshold.
+  [ "$output" = "all" ]
+}
+
+@test "a locale-formatted decimal still serializes as a JSON number" {
+  run in_locale de_DE.UTF-8 "
+    source '${REPO}/lib/netpack.sh'
+    dump_begin
+    dump_num loss_pct \"\$(awk 'BEGIN { printf \"%.1f\", 1.5 }')\"
+    dump_write '${BATS_TEST_TMPDIR:-/tmp}/locale.json' locmt 0"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"not a number"* ]]
+}
+
 @test "unique_path suffixes a base already taken by any of its extensions" {
   local d="${BATS_TEST_TMPDIR}"
   run unique_path "${d}/run" .log .json
