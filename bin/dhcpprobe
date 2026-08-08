@@ -529,6 +529,12 @@ def main(argv: list[str] | None = None) -> int:
 
     vlan_created = False
     if args.vlan is not None:
+        # SIGTERM's default action ends the process outright, skipping the
+        # finally that removes a sub-interface this run created — the box would
+        # keep an eth0.100 the tool promised to clean up. Raising instead lets
+        # the teardown run, as testsrv's EXIT/INT/TERM trap does for its
+        # firewall entries.
+        signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
         try:
             iface, vlan_created = vlan_setup(iface, args.vlan)
         except (subprocess.CalledProcessError, OSError) as exc:
