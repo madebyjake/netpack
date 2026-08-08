@@ -8,6 +8,7 @@ honest — that duplication is exactly how the sudo/probe tags drifted before.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +187,35 @@ def test_every_dump_payload_carries_the_required_keys() -> None:
                 f"{name} builds {py_dumps} dump payload(s) but names {key!r} "
                 f"{found} time(s); every payload must carry it"
             )
+
+
+def test_dumping_tools_offer_the_flag_in_their_help() -> None:
+    """A tool that writes JSON but never advertises --dump is undiscoverable.
+    The flag is checked against the rendered help rather than the source, so a
+    tool that accepts it but forgot to document it still fails."""
+    for name in json_tools():
+        proc = subprocess.run(
+            [str(ROOT / "bin" / name), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert "--dump" in proc.stdout, f"{name} --help does not document --dump"
+
+
+def test_dumping_tools_document_the_dump_exit_semantics() -> None:
+    """Every tool in TOOL_JSON is listed in the README's --dump paragraph.
+    That list is what an operator reads to know which runs leave JSON behind,
+    and it silently drifted every time a tool gained the flag."""
+    readme = (ROOT / "README.md").read_text()
+    para = next(
+        line
+        for line in readme.splitlines()
+        if "JSON `--dump` evidence is available on" in line
+    )
+    for name in json_tools():
+        assert f"`{name}`" in para, f"README --dump list omits {name}"
 
 
 def test_bash_dumping_tools_accept_the_capture_spelling() -> None:

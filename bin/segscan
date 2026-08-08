@@ -22,11 +22,12 @@ addresses) require -y to confirm. If the interface prefix cannot be read the
 sweep cannot be sized, so it also requires -y rather than proceeding unchecked.
 
 Usage:
-  segscan [-i IFACE] [-y]
+  segscan [-i IFACE] [-y] [--dump FILE]
 
 Options:
   -i IFACE      Interface (default: default-route iface)
   -y            Confirm ARP sweep on prefixes larger than /22
+  --dump FILE   Write JSON evidence to FILE
   -h, --help    Show this help
 
 Exit codes:
@@ -48,6 +49,9 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
+
 while getopts ":i:yh" opt; do
   case "$opt" in
     i) IFACE=$OPTARG ;;
@@ -62,6 +66,7 @@ no_extra_args "$@"
 IFACE="$(resolve_iface "${IFACE}")"
 require_cmd ip
 
+dump_begin
 header segscan
 echo "iface: ${IFACE}"
 multihomed_note "$IFACE" "pass -i IFACE to inventory another segment"
@@ -113,6 +118,22 @@ SWEEP="${SWEEP_DIR}/arp.txt"
 cleanup() { rm -rf "$SWEEP_DIR"; }
 trap cleanup EXIT
 
+# SWEEP_STATE distinguishes the four ways the sweep can end. Without it a host
+# list of zero is ambiguous: an empty segment, a missing arp-scan, a non-root
+# run and an interrupted sweep all produce no rows.
+SWEEP_STATE=completed
+
+emit_dump() {
+  local code=$1
+  [[ -n "$DUMP_PATH" ]] || return 0
+  dump_str iface "$IFACE"
+  dump_opt_str gateway "${GW:-}"
+  dump_num prefixlen "${PREFIX:-}"
+  dump_str sweep_state "$SWEEP_STATE"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  dump_write "$DUMP_PATH" segscan "$code" || true
+}
+
 iface_prefixlen() {
   ip -o -4 addr show dev "$IFACE" 2>/dev/null \
     | awk '{
@@ -152,6 +173,8 @@ if ! command -v arp-scan >/dev/null 2>&1; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (arp-scan not installed)." \
     "Install arp-scan and re-run for duplicate-IP detection."
+  SWEEP_STATE=skipped_no_arp_scan
+  emit_dump 0
   finish_with 0
 fi
 
@@ -162,6 +185,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (root required)." \
     "Re-run with sudo for the sweep and duplicate-IP check."
+  SWEEP_STATE=skipped_no_root
+  emit_dump 0
   finish_with 0
 fi
 
@@ -194,7 +219,27 @@ else
 fi
 
 if interrupted; then
+  SWEEP_STATE=partial
   note "interrupted — the sweep covers only the addresses reached before it stopped"
+fi
+
+# One row per responding host. arp-scan prints "IP<TAB>MAC<TAB>vendor" between
+# banner and footer lines, so rows are selected by a leading IPv4 literal rather
+# than by line number.
+if [[ -n "$DUMP_PATH" && -s "$SWEEP" ]]; then
+  while IFS=$'\t' read -r ip mac vendor; do
+    [[ -n "$ip" ]] || continue
+    dump_row hosts "s:ip=${ip}" "s:mac=${mac}" "S:vendor=${vendor}"
+  done < <(awk -F'\t' '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print }' "$SWEEP")
+  # Duplicates are listed separately as well as being derivable from hosts: it
+  # is the finding, and a consumer should not have to re-implement the grouping
+  # to notice two MACs claiming one address.
+  if [[ -n "${dups:-}" ]]; then
+    while IFS= read -r dip; do
+      [[ -n "$dip" ]] || continue
+      dump_row duplicate_ips "s:ip=${dip}"
+    done <<<"$dups"
+  fi
 fi
 
 if (( DUP_EXIT == 2 )); then
@@ -216,4 +261,5 @@ else
   verdict "segment inventory complete; ARP sweep produced no data." \
     "Check interface state and that arp-scan can reach the segment."
 fi
+emit_dump "$(interrupted && echo 130 || echo "$DUP_EXIT")"
 finish_with "$DUP_EXIT"

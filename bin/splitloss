@@ -39,13 +39,14 @@ drop them, so the WAN leg is reported untestable and the run exits 1 rather
 than fabricating loss. Binding may require root on some systems.
 
 Usage:
-  splitloss [-i IFACE] [-t SECONDS] [-w WAN_TARGET] [-d DIR]
+  splitloss [-i IFACE] [-t SECONDS] [-w WAN_TARGET] [-d DIR] [--dump FILE]
 
 Options:
   -i IFACE         Bind probes to IFACE and test its gateway (multi-homed)
   -t SECONDS       Test duration (default: 60)
   -w WAN_TARGET    WAN ICMP target (default: 1.1.1.1)
   -d DIR           Keep logs in DIR (timestamped filenames; created if needed)
+  --dump FILE      Write JSON evidence to FILE
   -h, --help       Show this help
 
 Without -d, logs are written under a private temp directory and removed on exit
@@ -63,6 +64,9 @@ if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":i:t:w:d:h" opt; do
   case "$opt" in
@@ -121,6 +125,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+dump_begin
 header splitloss
 echo "gateway: ${GW}  wan: ${WAN}  duration: ${T}s${VIA:+  via: ${VIA}}"
 if [[ -n "$IFACE" ]]; then
@@ -238,19 +243,58 @@ print_timeline() {
   done <<<"$rows"
 }
 
+# One row per target, carrying the same figures print_target rendered. rtt is
+# null rather than 0 when the log has no summary line: at 100% loss the probes
+# went out and nothing came back, and a zero would read as an instant reply.
+dump_target() {
+  local label=$1 host=$2 loss=$3 log=$4
+  local stats rmin="" ravg="" rmax="" rmdev=""
+  if stats="$(rtt_stats "$log")"; then
+    IFS=$'\t' read -r rmin ravg rmax rmdev <<<"$stats"
+    # rtt_stats prints "-" for mdev when ping omitted it.
+    [[ "$rmdev" == "-" ]] && rmdev=""
+  fi
+  dump_row targets "s:target=${label}" "s:host=${host}" "b:measured=true" \
+    "n:loss_pct=${loss}" "n:rtt_min_ms=${rmin}" "n:rtt_avg_ms=${ravg}" \
+    "n:rtt_max_ms=${rmax}" "n:rtt_mdev_ms=${rmdev}"
+}
+
+# Buckets are lossy intervals only, matching the report. An empty list means a
+# clean window; a bucket the run never reached is simply absent, which is why
+# measured=false above carries the "not tested" signal instead.
+dump_timeline() {
+  local label=$1 log=$2 rows off lost expect
+  rows="$(bucket_loss "$log" 60)" || return 0
+  [[ -n "$rows" ]] || return 0
+  while IFS=$'\t' read -r off lost expect; do
+    [[ -n "$off" ]] || continue
+    dump_row loss_timeline "s:target=${label}" "n:offset_s=${off}" \
+      "n:lost=${lost}" "n:expected=${expect}"
+  done <<<"$rows"
+}
+
 print_target gateway "$GW" "$gl" "$LOG_GW"
+dump_target gateway "$GW" "$gl" "$LOG_GW"
 if [[ -n "$WAN_SKIP" ]]; then
   printf '%-7s (%s): %s\n' wan "$WAN" "$(color_status warn "untestable via ${IFACE}")"
+  # Every figure null: an untestable leg is unmeasured, and a 0% loss here
+  # would put a path that was never probed into the evidence as clean.
+  dump_row targets "s:target=wan" "s:host=${WAN}" "b:measured=false" \
+    "n:loss_pct=" "n:rtt_min_ms=" "n:rtt_avg_ms=" \
+    "n:rtt_max_ms=" "n:rtt_mdev_ms="
 else
   print_target wan "$WAN" "$wl" "$LOG_WAN"
+  dump_target wan "$WAN" "$wl" "$LOG_WAN"
 fi
 
 # For long runs, show when the loss happened, not just how much.
 if (( T >= 120 )); then
   section "loss timeline (60s intervals, lossy only)"
   print_timeline gateway "$LOG_GW"
+  dump_timeline gateway "$LOG_GW"
   if [[ -z "$WAN_SKIP" ]]; then
     print_timeline wan "$LOG_WAN"
+    dump_timeline wan "$LOG_WAN"
   fi
   echo
 fi
@@ -268,24 +312,44 @@ fi
 # Enable temp cleanup only for successful interpretation paths.
 CLEAN_TMP=1
 
+# Ctrl-C is the normal stop for splitloss, so INTERRUPTED is not an error here;
+# it records that the window was shorter than -t asked for, which is what makes
+# the loss percentages comparable to another run or not.
+emit_dump() {
+  local code=$1
+  [[ -n "$DUMP_PATH" ]] || return 0
+  dump_str gateway "$GW"
+  dump_str wan "$WAN"
+  dump_opt_str iface "$IFACE"
+  dump_opt_str via "$VIA"
+  dump_num duration_s "$T"
+  dump_opt_str wan_untestable "$WAN_SKIP"
+  dump_bool interrupted "$( (( INTERRUPTED )) && echo true || echo false)"
+  dump_write "$DUMP_PATH" splitloss "$code" || true
+}
+
 if awk -v p="$gl" 'BEGIN { exit !(p > 1) }'; then
   verdict "loss to gateway indicates an access-layer problem.${WAN_SKIP:+ The WAN leg was untested.}" \
     "Inspect local switch/AP, cabling, and the gateway path."
+  emit_dump 2
   finished
   exit 2
 elif [[ -n "$WAN_SKIP" ]]; then
   verdict "gateway via ${IFACE} is clean; the WAN leg was untestable (${WAN_SKIP})." \
     "Add a policy route (ip rule) for ${SRC} to test this uplink end-to-end, or run without -i for the default path."
+  emit_dump 1
   finished
   exit 1
 elif awk -v p="$wl" 'BEGIN { exit !(p > 1) }'; then
   verdict "gateway is clean; WAN path shows loss." \
     "Inspect uplink, venue circuit, and upstream path evidence."
+  emit_dump 3
   finished
   exit 3
 else
   verdict "both targets were clean during this window." \
     "If the symptom was active, check application, server, or DNS layers."
+  emit_dump 0
   finished
   exit 0
 fi

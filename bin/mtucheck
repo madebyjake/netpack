@@ -27,12 +27,13 @@ tracepath section is skipped under -i (tracepath cannot bind). Binding may
 require root on some systems.
 
 Usage:
-  mtucheck [-i IFACE] [-w WAN_TARGET] [-m MAX_SIZE]
+  mtucheck [-i IFACE] [-w WAN_TARGET] [-m MAX_SIZE] [--dump FILE]
 
 Options:
   -i IFACE        Bind probes to IFACE and test its gateway (multi-homed)
   -w WAN_TARGET   WAN ICMP target (default: 1.1.1.1)
   -m MAX_SIZE     Maximum total IP size to test (default: 1500)
+  --dump FILE     Write JSON evidence to FILE
   -h, --help      Show this help
 
 Exit codes:
@@ -53,6 +54,9 @@ if [[ "${1:-}" == "--help" ]]; then
 fi
 
 IFACE=""
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":i:w:m:h" opt; do
   case "$opt" in
@@ -136,6 +140,7 @@ largest_ok() {
   echo "$best"
 }
 
+dump_begin
 header mtucheck
 echo "max: ${MAX}  gateway: ${GW}  wan: ${WAN}${VIA:+  via: ${VIA}}"
 if [[ -n "$IFACE" ]]; then
@@ -191,6 +196,61 @@ color_mtu() {
   fi
 }
 
+# A leg's state, not just its number. "0 bytes" and "never probed" are different
+# findings that a bare integer cannot tell apart: blocked DF probes are a real
+# result, an unprobed leg is the absence of one.
+#   measured   the binary search returned a size that passed
+#   blocked    probes ran and none succeeded
+#   not_probed the leg was skipped (unroutable binding, or interrupted first)
+GW_STATE=measured
+if (( gw_total == 0 )); then
+  GW_STATE=$(interrupted && echo not_probed || echo blocked)
+fi
+WAN_STATE=measured
+if [[ -n "$WAN_SKIP" ]]; then
+  WAN_STATE=untestable_via_iface
+elif [[ -n "$WAN_UNPROBED" ]]; then
+  WAN_STATE=not_probed
+elif (( wan_total == 0 )); then
+  WAN_STATE=$(interrupted && echo not_probed || echo blocked)
+fi
+
+# Every exit path below has already printed a report, so each writes evidence
+# too — an interrupted or untestable run still has to leave a file behind.
+emit_dump() {
+  local code=$1
+  [[ -n "$DUMP_PATH" ]] || return 0
+  dump_str gateway "$GW"
+  dump_str wan "$WAN"
+  dump_opt_str iface "$IFACE"
+  dump_opt_str via "$VIA"
+  dump_num max_size_bytes "$MAX"
+  dump_num threshold_bytes "$threshold"
+  dump_str gw_state "$GW_STATE"
+  dump_str wan_state "$WAN_STATE"
+  # Sizes only when the leg was actually measured; null otherwise, so a
+  # consumer cannot read an unprobed path as a zero-byte MTU.
+  if [[ "$GW_STATE" == measured ]]; then
+    dump_num gw_payload_bytes "$gw_payload"
+    dump_num gw_mtu_bytes "$gw_total"
+  else
+    dump_num gw_payload_bytes ""
+    dump_num gw_mtu_bytes ""
+  fi
+  if [[ "$WAN_STATE" == measured ]]; then
+    dump_num wan_payload_bytes "$wan_payload"
+    dump_num wan_mtu_bytes "$wan_total"
+  else
+    dump_num wan_payload_bytes ""
+    dump_num wan_mtu_bytes ""
+  fi
+  # An interrupted search proves a floor, not the path MTU. Without this a
+  # consumer would read the lower bound as a converged measurement.
+  dump_bool converged "$(interrupted && echo false || echo true)"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  dump_write "$DUMP_PATH" mtucheck "$code" || true
+}
+
 bound=""
 if interrupted; then
   bound=" — at least this, search did not converge"
@@ -218,6 +278,7 @@ if interrupted; then
     verdict "the gateway path passed DF probes up to approximately ${gw_total} bytes before the run was interrupted." \
       "This is a lower bound, not the path MTU. Re-run to completion to find where it stops."
   fi
+  emit_dump 130
   finished
   exit 130
 fi
@@ -226,15 +287,18 @@ fi
 # verdict is drawn from the gateway measurement alone.
 if [[ -n "$WAN_SKIP" ]]; then
   if (( gw_total == 0 )); then
+    emit_dump 1
     die "DF probes to the gateway failed via ${IFACE} (ICMP blocked, or binding may require root — re-run with sudo)"
   elif (( gw_total < threshold )); then
     verdict "reduced MTU on the gateway path via ${IFACE}; WAN leg untested." \
       "Check tunnels, PPPoE, and firewall DF handling on this uplink."
+    emit_dump 2
     finished
     exit 2
   else
     verdict "gateway path via ${IFACE} accepted near-full-size DF probes; the WAN leg was untestable (${WAN_SKIP})." \
       "Add a policy route (ip rule) for ${SRC} to test this uplink end-to-end, or run without -i for the default path."
+    emit_dump 1
     finished
     exit 1
   fi
@@ -242,6 +306,7 @@ fi
 
 case "$(classify_mtu "$threshold" "$gw_total" "$wan_total")" in
   blocked)
+    emit_dump 1
     if [[ -n "$IFACE" ]]; then
       die "DF probes failed to gateway and WAN via ${IFACE} (ICMP blocked, or binding may require root — re-run with sudo)"
     fi
@@ -250,11 +315,13 @@ case "$(classify_mtu "$threshold" "$gw_total" "$wan_total")" in
   reduced)
     verdict "reduced path MTU detected (or ICMP DF probes blocked beyond a size)." \
       "Check tunnels, PPPoE, and firewall DF handling; compare gateway vs WAN sizes."
+    emit_dump 2
     finished
     exit 2
     ;;
   *)
     verdict "gateway and WAN accepted near-full-size DF probes."
+    emit_dump 0
     finished
     exit 0
     ;;
