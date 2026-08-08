@@ -579,7 +579,18 @@ capture_run() {
   local stamp log manifest rc=0 started ended arg
   local -a shown=()
   stamp="$(date +%Y%m%d-%H%M%S)"
-  log="${CAPTURE_DIR}/${name}-${stamp}.log"
+  # The stamp is second-resolution (BSD date has no %N), so two runs starting in
+  # the same second would write the same filenames and the second would
+  # overwrite the first one's evidence while the manifest still listed both.
+  # Claimed against .log and .json together so a run keeps a matching pair.
+  # Inline rather than lib/netpack.sh's unique_path: the launcher does not
+  # source that file.
+  local base="${CAPTURE_DIR}/${name}-${stamp}" n=2
+  while [[ -e "${base}.log" || -e "${base}.json" ]]; do
+    base="${CAPTURE_DIR}/${name}-${stamp}-${n}"
+    n=$((n + 1))
+  done
+  log="${base}.log"
   manifest="${CAPTURE_DIR}/manifest.tsv"
   # JSON-capable tools dump into the capture directory as well, so the evidence
   # folder is complete without the operator naming a --dump path per run. An
@@ -591,7 +602,7 @@ capture_run() {
     fi
   done
   if supports_dump "$name" && (( ! has_dump )); then
-    set -- "$@" --dump "${CAPTURE_DIR}/${name}-${stamp}.json"
+    set -- "$@" --dump "${base}.json"
   fi
   # Record the command as it would be retyped ("sudo segscan -i eth0"), not the
   # resolved bin path — the manifest is meant to be reproducible by a reader.

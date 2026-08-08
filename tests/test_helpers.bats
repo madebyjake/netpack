@@ -641,3 +641,16 @@ in_locale() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"not a number"* ]]
 }
+
+@test "unique_path suffixes a base already taken by any of its extensions" {
+  local d="${BATS_TEST_TMPDIR}"
+  run unique_path "${d}/run" .log .json
+  [ "$output" = "${d}/run" ]
+  : > "${d}/run.log"
+  run unique_path "${d}/run" .log .json
+  [ "$output" = "${d}/run-2" ]
+  # Claimed as a pair: a taken .json moves the base even when .log is free.
+  : > "${d}/run-2.json"
+  run unique_path "${d}/run" .log .json
+  [ "$output" = "${d}/run-3" ]
+}
