@@ -366,6 +366,29 @@ no_extra_args() {
   fi
 }
 
+# unique_path BASE EXT... — BASE, or BASE-2, BASE-3 … until none of the given
+# extensions exist on disk. Timestamps are second-resolution because BSD date
+# has no %N, so two runs starting in the same second would otherwise write the
+# same filename and the second would overwrite the first one's evidence.
+unique_path() {
+  local base=$1
+  shift
+  local candidate=$base n=2 ext taken
+  while :; do
+    taken=0
+    for ext in "$@"; do
+      if [[ -e "${candidate}${ext}" ]]; then
+        taken=1
+        break
+      fi
+    done
+    (( taken )) || break
+    candidate="${base}-${n}"
+    n=$((n + 1))
+  done
+  printf '%s\n' "$candidate"
+}
+
 private_tmpdir() {
   local prefix=${1:-netpack}
   umask 077
