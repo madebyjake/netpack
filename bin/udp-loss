@@ -27,13 +27,14 @@ the run needs a policy route (ip rule) steering that address out IFACE; without
 one it exits 1 rather than measuring rp_filter drops as UDP loss.
 
 Usage:
-  udp-loss [-i IFACE] [-c COUNT] [-n NAME] [-s SERVER]...
+  udp-loss [-i IFACE] [-c COUNT] [-n NAME] [-s SERVER]... [--dump FILE]
 
 Options:
   -i IFACE       Bind queries to IFACE's address (multi-homed)
   -c COUNT       Queries per server (default: 100)
   -n NAME        Query name (default: cloudflare.com)
   -s SERVER      DNS server (repeatable; default: 1.1.1.1 and 9.9.9.9)
+  --dump FILE    Write JSON evidence to FILE
   -h, --help     Show this help
 
 Queries are sequential; a heavily lossy path can take up to COUNT seconds
@@ -62,6 +63,9 @@ if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":i:c:n:s:h" opt; do
   case "$opt" in
@@ -97,6 +101,7 @@ else
   VIA="$(via_for "${SERVERS[0]}")"
 fi
 
+dump_begin
 header udp-loss
 echo "count: ${COUNT}  servers: ${SERVERS[*]}  name: ${NAME}${VIA:+  via: ${VIA}}"
 if [[ -n "$IFACE" ]]; then
@@ -148,14 +153,17 @@ for srv in "${SERVERS[@]}"; do
   loss="$(awk -v f="$fail" -v c="$sent" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
   LOSS_PCTS+=("$loss")
 
+  # Parsed into fields rather than a display string, so the report and the dump
+  # carry the same numbers instead of the dump re-deriving them.
+  rmin="" ravg="" rp95="" rmax=""
   if (( ok > 0 )); then
-    stats="$(printf '%s\n' "${rtts[@]}" | sort -n | awk '
+    IFS=$'\t' read -r rmin ravg rp95 rmax <<<"$(printf '%s\n' "${rtts[@]}" | sort -n | awk '
       { a[NR] = $1; s += $1 }
       END {
-        if (NR < 1) { print "no replies"; exit }
         p = int(NR * 0.95); if (p < 1) p = 1
-        printf "min %sms avg %.1fms p95 %sms max %sms", a[1], s / NR, a[p], a[NR]
+        printf "%s\t%.1f\t%s\t%s", a[1], s / NR, a[p], a[NR]
       }')"
+    stats="min ${rmin}ms avg ${ravg}ms p95 ${rp95}ms max ${rmax}ms"
   else
     stats="no replies"
   fi
@@ -163,12 +171,39 @@ for srv in "${SERVERS[@]}"; do
   printf '%-16s sent %-4d ok %-4d lost %-3d (%s)  %s%s\n' \
     "$srv" "$sent" "$ok" "$fail" "$(color_loss_pct "$loss")" "$stats" \
     "$( (( sent < COUNT )) && printf ' — cut short at %d of %d' "$sent" "$COUNT")"
+
+  # queried=true and an rtt of null when nothing replied: no reply is a real
+  # measurement, an absent rtt is simply not a number.
+  dump_row servers "s:server=${srv}" "b:queried=true" \
+    "n:sent=${sent}" "n:received=${ok}" "n:lost=${fail}" "n:loss_pct=${loss}" \
+    "n:rtt_min_ms=${rmin}" "n:rtt_avg_ms=${ravg}" \
+    "n:rtt_p95_ms=${rp95}" "n:rtt_max_ms=${rmax}" \
+    "b:complete=$( (( sent >= COUNT )) && echo true || echo false)"
 done
 release_int
 
 for srv in "${UNQUERIED[@]+"${UNQUERIED[@]}"}"; do
   printf '%-16s %s\n' "$srv" "$(color_status warn "not queried — run interrupted first")"
+  # Present in the evidence but with every figure null: the server was in the
+  # run's scope, and omitting it entirely would hide that it went untested.
+  dump_row servers "s:server=${srv}" "b:queried=false" \
+    "n:sent=" "n:received=" "n:lost=" "n:loss_pct=" \
+    "n:rtt_min_ms=" "n:rtt_avg_ms=" "n:rtt_p95_ms=" "n:rtt_max_ms=" \
+    "b:complete=false"
 done
+
+emit_dump() {
+  local code=$1
+  [[ -n "$DUMP_PATH" ]] || return 0
+  dump_num count_requested "$COUNT"
+  dump_str query_name "$NAME"
+  dump_opt_str iface "$IFACE"
+  dump_opt_str via "$VIA"
+  dump_num servers_queried "${#LOSS_PCTS[@]}"
+  dump_num servers_total "${#SERVERS[@]}"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  dump_write "$DUMP_PATH" udp-loss "$code" || true
+}
 
 if interrupted; then
   note "interrupted — figures cover the queries sent before the run was stopped"
@@ -179,6 +214,7 @@ fi
 if [[ ${#LOSS_PCTS[@]} -eq 0 ]]; then
   verdict "interrupted before any resolver was queried; no UDP evidence collected." \
     "Re-run and allow at least one server to complete."
+  emit_dump 130
   finished
   exit 130
 fi
@@ -187,6 +223,7 @@ case "$(classify_loss_set 1 "${LOSS_PCTS[@]}")" in
   all)
     verdict "UDP loss observed to all tested resolvers." \
       "Investigate path policing, NAT state, or venue/ISP UDP handling."
+    emit_dump "$(interrupted && echo 130 || echo 2)"
     finished
     interrupted && exit 130
     exit 2
@@ -194,6 +231,7 @@ case "$(classify_loss_set 1 "${LOSS_PCTS[@]}")" in
   mixed)
     verdict "results diverge across resolvers." \
       "Likely destination-specific handling rather than a shared path fault."
+    emit_dump "$(interrupted && echo 130 || echo 3)"
     finished
     interrupted && exit 130
     exit 3
@@ -202,11 +240,13 @@ case "$(classify_loss_set 1 "${LOSS_PCTS[@]}")" in
     if interrupted; then
       verdict "UDP replies received from every resolver reached before the run was interrupted." \
         "A short sample hides intermittent loss; re-run to completion before reading this as clean."
+      emit_dump 130
       finished
       exit 130
     fi
     verdict "UDP replies received from all tested resolvers." \
       "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
+    emit_dump 0
     finished
     exit 0
     ;;

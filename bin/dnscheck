@@ -43,13 +43,14 @@ steering that address out IFACE; without one it exits 1 rather than reporting
 rp_filter drops as resolver failure.
 
 Usage:
-  dnscheck [-i IFACE] [-n NAME] [-p PUBLIC_RESOLVER] [-t TYPE]
+  dnscheck [-i IFACE] [-n NAME] [-p PUBLIC_RESOLVER] [-t TYPE] [--dump FILE]
 
 Options:
   -i IFACE             Bind queries to IFACE's address (multi-homed)
   -n NAME              Query name (default: cloudflare.com)
   -p PUBLIC_RESOLVER   Public resolver for baseline (default: auto-chosen; see below)
   -t TYPE              Record type: mnemonic or TYPEn (default: A)
+  --dump FILE          Write JSON evidence to FILE
   -h, --help           Show this help
 
 Note: names with geo or round-robin answers (CDNs) can differ legitimately
@@ -80,6 +81,9 @@ if [[ "${1:-}" == "--help" ]]; then
   usage
   exit 0
 fi
+
+take_dump_opt "$@"
+set -- "${NP_ARGS[@]+"${NP_ARGS[@]}"}"
 
 while getopts ":i:n:p:t:h" opt; do
   case "$opt" in
@@ -176,6 +180,7 @@ query_one() {
   printf '%s\t%s\t%s\t%s\n' "$server" "$status" "$addrs" "$rtt"
 }
 
+dump_begin
 header dnscheck
 echo "name: ${NAME}  type: ${TYPE}"
 
@@ -250,6 +255,8 @@ for row in "${QUERY_ROWS[@]}"; do
   if interrupted; then
     printf '%-16s %-12s %s\n' "$s" "$via" \
       "$(color_status warn "not queried — run interrupted")"
+    dump_row resolvers "s:server=${s}" "s:source=${via}" "b:queried=false" \
+      "S:status=" "S:answers=" "n:rtt_ms="
     continue
   fi
   IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
@@ -259,6 +266,8 @@ for row in "${QUERY_ROWS[@]}"; do
   if interrupted; then
     printf '%-16s %-12s %s\n' "$s" "$via" \
       "$(color_status warn "cut short — run interrupted")"
+    dump_row resolvers "s:server=${s}" "s:source=${via}" "b:queried=false" \
+      "S:status=" "S:answers=" "n:rtt_ms="
     continue
   fi
   # Pad to the header's 10-char status column before coloring; ANSI codes
@@ -270,6 +279,15 @@ for row in "${QUERY_ROWS[@]}"; do
     *)       status_disp="$(color_status warn "$status_pad")" ;;
   esac
   printf '%-16s %-12s %s %-32s %s\n' "$srv" "$via" "$status_disp" "$addrs" "$rtt"
+  # The report renders "-" for an absent answer or timing and suffixes ms; the
+  # dump carries a null and a bare number instead, so "no answer" cannot be
+  # read as the literal string "-" and rtt stays arithmetic.
+  rtt_ms="${rtt%ms}"
+  [[ "$rtt_ms" == "-" ]] && rtt_ms=""
+  answers_json="$addrs"
+  [[ "$answers_json" == "-" ]] && answers_json=""
+  dump_row resolvers "s:server=${srv}" "s:source=${via}" "b:queried=true" \
+    "s:status=${status}" "S:answers=${answers_json}" "n:rtt_ms=${rtt_ms}"
   STATUSES+=("$status")
   ANSWERS+=("$addrs")
 done
@@ -279,12 +297,35 @@ if interrupted; then
   note "interrupted — the comparison covers only the resolvers queried above"
 fi
 
+emit_dump() {
+  local code=$1
+  [[ -n "$DUMP_PATH" ]] || return 0
+  dump_str query_name "$NAME"
+  dump_str record_type "$TYPE"
+  dump_str baseline "$PUBLIC"
+  dump_str resolver_source "$RESOLVER_SOURCE"
+  dump_opt_str iface "$IFACE"
+  dump_num resolvers_configured "${#RESOLVERS[@]}"
+  dump_num resolvers_queried "${#STATUSES[@]}"
+  dump_num resolvers_total "${#QUERY_ROWS[@]}"
+  # Both qualify the comparison rather than describing a resolver: a shared
+  # baseline is not an independent control, and a stub-only run never reached
+  # the upstreams it forwards to.
+  dump_bool baseline_shared "$( (( BASELINE_SHARED )) && echo true || echo false)"
+  dump_bool stub_only "$( (( STUB_ONLY )) && echo true || echo false)"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  # assessment_code must equal the status the process exits with, and
+  # finish_with downgrades an interrupted run to 130.
+  dump_write "$DUMP_PATH" dnscheck "$(interrupted && echo 130 || echo "$code")" || true
+}
+
 # With nothing queried there is no comparison to draw, and a "resolvers agree"
 # verdict drawn from zero resolvers would be the most confident wrong answer the
 # tool could give.
 if [[ ${#STATUSES[@]} -eq 0 ]]; then
   verdict "interrupted before any resolver was queried; no DNS evidence collected." \
     "Re-run and allow at least one resolver to answer."
+  emit_dump 130
   finish_with 130
 fi
 
@@ -319,21 +360,25 @@ fi
 if (( failed )); then
   verdict "one or more resolvers failed or returned a non-NOERROR status." \
     "Check resolver reachability, captive portals, and local DNS configuration."
+  emit_dump 2
   finish_with 2
 fi
 if (( conflict )); then
   verdict "resolvers returned conflicting answers for the same name." \
     "Compare configured resolvers against the public baseline; suspect hijack, split DNS, or stale cache."
+  emit_dump 3
   finish_with 3
 fi
 if (( ${#RESOLVERS[@]} == 0 )); then
   verdict "public resolver succeeded; no configured resolvers were found." \
     "Inspect /etc/resolv.conf or systemd-resolved configuration."
+  emit_dump 2
   finish_with 2
 fi
 if (( STUB_ONLY )); then
   verdict "only a local forwarding stub answered; the upstreams it forwards to were not tested." \
     "A stub agreeing with the baseline proves nothing about its upstreams — query them directly with -p."
+  emit_dump 2
   finish_with 2
 fi
 # Agreement is only evidence when two different servers produced it. One server
@@ -341,6 +386,7 @@ fi
 if (( ${#QUERY_ROWS[@]} < 2 )); then
   verdict "only one resolver was available, so there was nothing to compare it against." \
     "Pass -p with a resolver this system does not use to get an independent baseline."
+  emit_dump 2
   finish_with 2
 fi
 if (( BASELINE_SHARED )); then
@@ -352,4 +398,5 @@ elif interrupted; then
 else
   verdict "configured and public resolvers returned consistent NOERROR answers."
 fi
+emit_dump 0
 finish_with 0
