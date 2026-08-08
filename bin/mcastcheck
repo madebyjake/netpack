@@ -8,7 +8,6 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
@@ -18,6 +17,7 @@ from netpack.mcast import (
     HEADER_LEN,
     LIVE_MEDIA_RANGE,
     ProbeStats,
+    Source,
     decode_probe,
     encode_probe,
     in_live_media_range,
@@ -109,34 +109,25 @@ Exit codes:
 """
 
 
-def _mbit_s(nbytes: int, seconds: float) -> float:
-    return nbytes * 8 / seconds / 1e6
+# Rate accounting lives on Source (lib/netpack/mcast.py) so it is unit-testable
+# without a socket, per the lib/bin split.
 
 
-def _source_rate(entry: dict[str, Any], elapsed: float) -> float:
-    """Average rate over the sender's active span, not the whole listen window,
-    so a flow that started late or ended early is not understated."""
-    span = entry["last"] - entry["first"]
-    if entry["packets"] > 1 and span > 0:
-        return _mbit_s(entry["bytes"], span)
-    return _mbit_s(entry["bytes"], elapsed)
-
-
-def print_sources(sources: dict[tuple[str, int], dict[str, Any]], elapsed: float) -> None:
+def print_sources(sources: dict[tuple[str, int], Source], elapsed: float) -> None:
     report.section(f"sources ({len(sources)})")
     if not sources:
         print(f"  ({report.color_status('bad', 'none')})")
         return
-    by_traffic = sorted(sources.items(), key=lambda kv: kv[1]["packets"], reverse=True)
+    by_traffic = sorted(sources.items(), key=lambda kv: kv[1].packets, reverse=True)
     for (ip, port), entry in by_traffic:
-        rate = _source_rate(entry, elapsed)
-        avg = entry["bytes"] // max(entry["packets"], 1)
+        rate = entry.rate_mbit_s(elapsed)
+        avg = entry.bytes // max(entry.packets, 1)
         line = (
-            f"  {ip}:{port}  {entry['packets']} pkts  "
+            f"  {ip}:{port}  {entry.packets} pkts  "
             f"{rate:.2f} Mbit/s  avg {avg} B"
         )
-        if entry["probe"] is not None:
-            s = entry["probe"].summary()
+        if entry.probe is not None:
+            s = entry.probe.summary()
             loss = f"{s['loss_pct']}%"
             loss_c = report.color_status("bad" if s["loss_pct"] > 1 else "ok", loss)
             line += (
@@ -155,7 +146,7 @@ def run_recv(
     dump: str | None,
 ) -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sources: dict[tuple[str, int], dict[str, Any]] = {}
+    sources: dict[tuple[str, int], Source] = {}
     start = time.monotonic()
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -181,16 +172,16 @@ def run_recv(
                 key = (addr[0], addr[1])
                 entry = sources.get(key)
                 if entry is None:
-                    entry = {"packets": 0, "bytes": 0, "first": now, "last": now, "probe": None}
+                    entry = Source(first=now, last=now)
                     sources[key] = entry
-                entry["last"] = now
-                entry["packets"] += 1
-                entry["bytes"] += len(data)
+                entry.last = now
+                entry.packets += 1
+                entry.bytes += len(data)
                 probe = decode_probe(data)
                 if probe is not None:
-                    if entry["probe"] is None:
-                        entry["probe"] = ProbeStats()
-                    entry["probe"].add(probe[0], probe[1], now)
+                    if entry.probe is None:
+                        entry.probe = ProbeStats()
+                    entry.probe.add(probe[0], probe[1], now)
         except KeyboardInterrupt:
             pass  # end the window early and report what was seen
         elapsed = max(time.monotonic() - start, 0.001)
@@ -208,7 +199,7 @@ def run_recv(
     print_sources(sources, elapsed)
 
     probe_losses = [
-        e["probe"].summary()["loss_pct"] for e in sources.values() if e["probe"] is not None
+        e.probe.summary()["loss_pct"] for e in sources.values() if e.probe is not None
     ]
     worst = max(probe_losses) if probe_losses else None
 
@@ -249,10 +240,10 @@ def run_recv(
                 {
                     "ip": ip,
                     "port": sport,
-                    "packets": e["packets"],
-                    "bytes": e["bytes"],
-                    "mbit_s": round(_source_rate(e, elapsed), 3),
-                    "probe": e["probe"].summary() if e["probe"] is not None else None,
+                    "packets": e.packets,
+                    "bytes": e.bytes,
+                    "mbit_s": round(e.rate_mbit_s(elapsed), 3),
+                    "probe": e.probe.summary() if e.probe is not None else None,
                 }
                 for (ip, sport), e in sources.items()
             ],
@@ -301,10 +292,10 @@ def run_send(
                 # feed the jitter calculation, so the two clocks need no
                 # relationship — but an NTP step mid-run would show up as a
                 # false jitter spike if this were time.time().
-                payload = encode_probe(seq, time.monotonic(), size)
-                sock.sendto(payload, (group, port))
+                datagram = encode_probe(seq, time.monotonic(), size)
+                sock.sendto(datagram, (group, port))
                 sent += 1
-                sent_bytes += len(payload)
+                sent_bytes += len(datagram)
                 next_t += 1.0 / rate
         except KeyboardInterrupt:
             interrupted = True

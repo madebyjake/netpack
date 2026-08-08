@@ -175,13 +175,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for row in results:
         pair = row.get("pair", "?")
-        code = row.get("code") or "unknown"
+        # `status`, not `code`: the exit code is computed below under that name,
+        # and one identifier meaning both a pair result and the run's status is
+        # how a later edit picks up the wrong one.
+        status = row.get("code") or "unknown"
         length = row.get("fault_length_m")
         detail = f" at ~{length:g} m" if isinstance(length, float) else ""
-        if link.cable_is_ok(code):
-            print(f"  pair {pair}: {report.color_status('ok', str(code))}")
+        if link.cable_is_ok(status):
+            print(f"  pair {pair}: {report.color_status('ok', str(status))}")
         else:
-            print(f"  pair {pair}: {report.color_status('bad', str(code))}{detail}")
+            print(f"  pair {pair}: {report.color_status('bad', str(status))}{detail}")
 
     faults = link.cable_faults(results)
     code = EXIT_FAULT if faults else EXIT_OK

@@ -2,3 +2,8 @@
 # which would flip CI red without any code change.
 ruff>=0.16,<0.17
 pytest>=8.0.0
+# Pinned exactly, not to a range: ty is pre-1.0 and its inference changes
+# between patch releases, so a range would turn CI red with no code change —
+# the same failure the ruff pin above exists to prevent, and worse, since a
+# type checker sees every file. Bump deliberately and fix what it finds.
+ty==0.0.69

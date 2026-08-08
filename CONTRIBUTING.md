@@ -57,6 +57,7 @@ make check          # everything, in CI's order
 make test           # pytest only
 make bats           # bats only
 make lint           # ruff + shellcheck
+make typecheck      # ty over lib/, tests/, and the Python tools
 make compile        # py_compile the Python tools
 make smoke          # every tool answers --help
 make help           # all targets
@@ -74,8 +75,21 @@ E402 from its defaults, so an unpinned ruff flagged every `sys.path.insert`
 before a `netpack` import.
 
 That file is configuration only; there is no Python package to build. It also
-tells pytest and any type checker where `lib/` is, so bare `pytest` works and
-editors resolve `netpack` imports.
+tells pytest and the type checkers where `lib/` is, so bare `pytest` works and
+editors resolve `netpack` imports. Three keys say the same thing for three
+consumers: `pythonpath` for pytest, `extraPaths` for pyright and editors, and
+`[tool.ty.environment] extra-paths` for `ty` — that last one is rejected as an
+unknown field if put under `[tool.ty.src]`.
+
+`ty` is pinned to an exact version rather than a range. It is pre-1.0 and its
+inference changes between patch releases, so a range would turn CI red with no
+code change — the same failure the `ruff` pin prevents, with a wider blast
+radius because a type checker reads every file. Bump it deliberately.
+
+Type annotations are not required everywhere, but new code should not need
+`# type: ignore`. The 21 that existed were all on `scapy` imports and became
+unnecessary once scapy shipped `py.typed`; a suppression that outlives its
+cause hides the next real error.
 
 ## Adding a tool
 

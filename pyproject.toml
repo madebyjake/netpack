@@ -23,3 +23,9 @@ testpaths = ["tests"]
 # Same reason: without this a type checker or editor cannot resolve `netpack`
 # and reports every import as missing.
 extraPaths = ["lib"]
+
+[tool.ty.environment]
+# lib/ is imported by path, so ty needs telling where it is, exactly as pyright
+# and pytest do above. The key belongs to [tool.ty.environment]; putting it
+# under [tool.ty.src] is rejected as an unknown field.
+extra-paths = ["lib"]
