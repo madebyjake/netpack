@@ -58,7 +58,11 @@ Options:
 Exit codes:
   0  discovery completed (zero devices is a valid result)
   1  usage, dependency, or socket error
-  130  interrupted before the listen windows completed
+  130  interrupted; the report and dump cover the responders already seen
+
+Ctrl-C ends the run and still reports: a host that answered is on the segment
+whenever listening stopped. Interrupting the SSDP window skips the mDNS one,
+which is then reported as unsearched rather than as finding nothing.
 """
 
 
@@ -88,7 +92,14 @@ def _mcast_socket(ttl: int, src_ip: str | None) -> socket.socket:
     return sock
 
 
-def ssdp_search(timeout: float, src_ip: str | None) -> tuple[dict[str, dict[str, Any]], str]:
+def ssdp_search(
+    timeout: float, src_ip: str | None
+) -> tuple[dict[str, dict[str, Any]], str, bool]:
+    """Responders seen, the send error if any, and whether Ctrl-C cut the window.
+
+    An interrupted window returns the responders already collected: they
+    answered, so they are on the segment regardless of when listening stopped.
+    """
     msg = (
         b"M-SEARCH * HTTP/1.1\r\n"
         b"HOST: 239.255.255.250:1900\r\n"
@@ -98,54 +109,65 @@ def ssdp_search(timeout: float, src_ip: str | None) -> tuple[dict[str, dict[str,
     )
     sock = _mcast_socket(2, src_ip)
     devices: dict[str, dict[str, Any]] = {}
+    interrupted = False
     try:
         try:
             sock.sendto(msg, SSDP_ADDR)
         except OSError as exc:
-            return devices, str(exc)
+            return devices, str(exc), False
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                data, addr = sock.recvfrom(65535)
-            except TimeoutError:
-                continue
-            ip = addr[0]
-            headers = parse_ssdp(data)
-            dev = devices.setdefault(ip, {"ip": ip, "server": "", "services": set()})
-            if headers.get("server"):
-                dev["server"] = headers["server"]
-            st = headers.get("st") or headers.get("nt")
-            if st and st != "ssdp:all":
-                dev["services"].add(st)
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    data, addr = sock.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                ip = addr[0]
+                headers = parse_ssdp(data)
+                dev = devices.setdefault(ip, {"ip": ip, "server": "", "services": set()})
+                if headers.get("server"):
+                    dev["server"] = headers["server"]
+                st = headers.get("st") or headers.get("nt")
+                if st and st != "ssdp:all":
+                    dev["services"].add(st)
+        except KeyboardInterrupt:
+            interrupted = True
     finally:
         sock.close()
-    return devices, ""
+    return devices, "", interrupted
 
 
-def mdns_search(timeout: float, src_ip: str | None) -> tuple[dict[str, set[str]], str]:
+def mdns_search(
+    timeout: float, src_ip: str | None
+) -> tuple[dict[str, set[str]], str, bool]:
+    """As ssdp_search, for mDNS: hosts seen, send error, and interrupted state."""
     header = struct.pack(">HHHHHH", 0, 0, 1, 0, 0, 0)
     # qclass 0x8001 = IN with the unicast-response (QU) bit set.
     query = header + encode_name(MDNS_META) + struct.pack(">HH", 12, 0x8001)
     sock = _mcast_socket(1, src_ip)
     hosts: dict[str, set[str]] = {}
+    interrupted = False
     try:
         try:
             sock.sendto(query, MDNS_ADDR)
         except OSError as exc:
-            return hosts, str(exc)
+            return hosts, str(exc), False
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                data, addr = sock.recvfrom(65535)
-            except TimeoutError:
-                continue
-            ip = addr[0]
-            for rtype, _name, target in parse_mdns(data):
-                if rtype == 12 and target:  # PTR → advertised service type
-                    hosts.setdefault(ip, set()).add(target.replace(".local", ""))
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    data, addr = sock.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                ip = addr[0]
+                for rtype, _name, target in parse_mdns(data):
+                    if rtype == 12 and target:  # PTR → advertised service type
+                        hosts.setdefault(ip, set()).add(target.replace(".local", ""))
+        except KeyboardInterrupt:
+            interrupted = True
     finally:
         sock.close()
-    return hosts, ""
+    return hosts, "", interrupted
 
 
 def print_report(
@@ -155,6 +177,8 @@ def print_report(
     iface_label: str,
     ssdp_err: str = "",
     mdns_err: str = "",
+    interrupted: bool = False,
+    mdns_searched: bool = True,
 ) -> None:
     report.header("discover")
     print(f"window: {timeout:g}s per protocol  iface: {iface_label}")
@@ -173,10 +197,12 @@ def print_report(
             print(f"      services: {len(svcs)} ({', '.join(svcs[:4])}"
                   f"{', …' if len(svcs) > 4 else ''})")
 
-    report.section(f"mDNS ({len(mdns)})")
+    report.section("mDNS (not searched)" if not mdns_searched else f"mDNS ({len(mdns)})")
     if mdns_err:
         report.warning(f"mDNS query failed: {mdns_err}")
-    if not mdns:
+    if not mdns_searched:
+        print("  (window never opened — the run was interrupted during SSDP)")
+    elif not mdns:
         print("  (none)")
     media_hosts: dict[str, list[str]] = {}
     for ip in sorted(mdns, key=_ip_key):
@@ -199,14 +225,31 @@ def print_report(
         )
 
     total = len(set(ssdp) | set(mdns))
+    scope = "SSDP only" if not mdns_searched else f"SSDP {len(ssdp)}, mDNS {len(mdns)}"
+    if interrupted:
+        report.warning("interrupted; the listen window(s) did not run to completion")
     if total == 0:
+        if interrupted:
+            # A silent segment and a window closed after half a second look
+            # identical here, so this must not be read as "nothing is there".
+            report.verdict(
+                "no responders seen before the run was interrupted.",
+                "Too short to call the segment quiet; re-run to completion.",
+            )
+        else:
+            report.verdict(
+                "no SSDP or mDNS responders seen.",
+                "Quiet segment, discovery filtered by client isolation, or nothing advertising.",
+            )
+    elif interrupted:
         report.verdict(
-            "no SSDP or mDNS responders seen.",
-            "Quiet segment, discovery filtered by client isolation, or nothing advertising.",
+            f"{total} host(s) announced services ({scope}) before the run was interrupted.",
+            "Those seen are real; the list is not exhaustive. Re-run to completion "
+            "for a full inventory.",
         )
     else:
         report.verdict(
-            f"{total} host(s) announced services (SSDP {len(ssdp)}, mDNS {len(mdns)}).",
+            f"{total} host(s) announced services ({scope}).",
             "Cross-reference with segscan; unexpected advertisers may be rogue devices.",
         )
 
@@ -248,12 +291,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         src_ip = _outbound_ip()
         iface_label = "(default route)"
-    try:
-        ssdp, ssdp_err = ssdp_search(args.timeout, src_ip)
-        mdns, mdns_err = mdns_search(args.timeout, src_ip)
-    except KeyboardInterrupt:
-        print("error: interrupted", file=sys.stderr)
-        return EXIT_INTERRUPT
+    ssdp, ssdp_err, interrupted = ssdp_search(args.timeout, src_ip)
+    # Ctrl-C during the SSDP window ends the run rather than falling through to
+    # the mDNS one: the operator asked the tool to stop, and opening a second
+    # window would make that keypress look ignored. An unsearched mDNS window is
+    # then reported as unsearched, never as "none found".
+    mdns: dict[str, set[str]] = {}
+    mdns_err = ""
+    mdns_searched = False
+    if not interrupted:
+        mdns, mdns_err, interrupted = mdns_search(args.timeout, src_ip)
+        mdns_searched = True
 
     if ssdp_err and mdns_err:
         print(
@@ -263,11 +311,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_ERROR
 
-    print_report(ssdp, mdns, args.timeout, iface_label, ssdp_err, mdns_err)
+    print_report(
+        ssdp, mdns, args.timeout, iface_label, ssdp_err, mdns_err,
+        interrupted, mdns_searched,
+    )
 
     # Zero responders is a valid result, not a condition. Held in a variable so
     # the dump records the returned code rather than re-deriving it.
-    code = EXIT_OK
+    code = EXIT_INTERRUPT if interrupted else EXIT_OK
 
     if args.dump:
         payload = {
@@ -278,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
                 {"ip": d["ip"], "server": d["server"], "services": sorted(d["services"])}
                 for d in ssdp.values()
             ],
+            # null, not [], when the window never opened: an unsearched protocol
+            # must not read as "searched and found nothing".
             "mdns": [
                 {
                     "ip": ip,
@@ -289,8 +342,11 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 }
                 for ip, s in mdns.items()
-            ],
+            ]
+            if mdns_searched
+            else None,
             "host_count": len(set(ssdp) | set(mdns)),
+            "interrupted": interrupted,
             "assessment_code": code,
         }
         path = report.write_dump(args.dump, payload)
