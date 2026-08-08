@@ -337,3 +337,21 @@ setup() {
   run classify_mtu 1460 0 0
   [ "$output" = "blocked" ]
 }
+
+# path3 runs `mtr -rwb`. -b prints "hostname (ip)", so the host occupies two
+# fields and the Loss% column shifts right; the existing fixture has only the
+# one-field form. summarize_final finds the % column rather than counting from
+# the left, which is what makes both shapes work.
+
+@test "summarize_final reads the two-field host that mtr -b prints" {
+  run summarize_final "${FIXTURES}/mtr_report_both.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'dns.google\t4.0%%\t19.5ms')" ]
+}
+
+@test "summarize_final reports an unresolved final hop rather than skipping it" {
+  # mtr prints ??? for a hop that never answered; 100% loss there is the finding.
+  run summarize_final "${FIXTURES}/mtr_report_unresolved.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '???\t100.0%%\t0.0ms')" ]
+}
