@@ -49,6 +49,10 @@ Exit codes:
   1  usage, dependency, permission, or mode failure; or -i could not bind
   2  final-hop loss above 1% on every measured protocol
   3  final-hop loss above 1% on some protocols but not others
+  130  interrupted; only the modes that completed were measured
+
+Ctrl-C stops the run and still reports. A mode cut short or never started shows
+as "-" and is not counted as a failed mode.
 EOF
 }
 
@@ -105,6 +109,14 @@ run_mode() {
   shift
   local out="${DIR}/${label}.txt"
   local pid rc=0 t0=$SECONDS
+  # A mode the run never started is unmeasured. Skipping it here rather than
+  # letting mtr run means the summary reports "-" for it, which reads as no
+  # data, instead of a loss figure for probes that were never sent.
+  if interrupted; then
+    echo "=== ${label} (skipped — run interrupted) ==="
+    echo
+    return 0
+  fi
   echo "=== ${label} (${COUNT} probes) ==="
   # mtr -r prints nothing until it finishes, so run it in the background and
   # tick elapsed time on stderr; the report itself loses nothing.
@@ -119,6 +131,14 @@ run_mode() {
   # shellcheck disable=SC2119
   pulse_done
   cat "$out"
+  # Ctrl-C kills mtr too, so it exits non-zero and writes no summary. That is
+  # the interrupt, not a broken mode — counting it would raise the "mtr mode(s)
+  # failed, re-run with sudo" verdict against a run the operator ended.
+  if interrupted; then
+    warning "${label} interrupted before its probes completed"
+    echo
+    return 0
+  fi
   if (( rc != 0 )); then
     echo "error: mtr ${label} exited non-zero" >&2
     FAILED_MODES=$((FAILED_MODES + 1))
@@ -132,9 +152,11 @@ run_mode() {
   echo
 }
 
+catch_int
 run_mode icmp
 run_mode udp -u
 run_mode tcp -T -P "$PORT"
+release_int
 
 echo "=== final-hop summary ==="
 printf '%-5s %-40s %-10s %s\n' "mode" "host" "loss" "avg"
@@ -158,6 +180,10 @@ for m in icmp udp tcp; do
   printf '%-5s %-40s %-10s %s\n' "$m" "${host:--}" "$loss_disp" "${avg:--}"
 done
 
+if interrupted; then
+  note "interrupted — modes shown as '-' were cut short or never started"
+fi
+
 if (( FAILED_MODES > 0 )); then
   if [[ "$(id -u)" -ne 0 ]]; then
     verdict "${FAILED_MODES} mtr mode(s) failed." \
@@ -165,8 +191,14 @@ if (( FAILED_MODES > 0 )); then
   else
     verdict "${FAILED_MODES} mtr mode(s) failed or produced unusable output."
   fi
-  finished
-  exit 1
+  finish_with 1
+fi
+
+# Every mode was cut short or skipped, so there is no loss figure to classify.
+if interrupted && [[ "$(printf '%s\n' "${FINAL_LOSS[@]}" | tr -d '-\n')" == "" ]]; then
+  verdict "interrupted before any mode produced a usable report; no path evidence collected." \
+    "Re-run and allow at least one mode to complete."
+  finish_with 130
 fi
 # The report is evidence either way; the exit code says whether it found loss,
 # so a scripted run can tell "the path is clean" from "the path is not".
@@ -174,18 +206,16 @@ case "$(classify_loss_set 1 "${FINAL_LOSS[@]}")" in
   all)
     verdict "final-hop loss on every measured protocol." \
       "Consistent across protocols points at forwarding loss on the path, not probe deprioritization."
-    finished
-    exit 2
+    finish_with 2
     ;;
   mixed)
     verdict "final-hop loss on some protocols but not others." \
       "Per-protocol loss is usually policing or rate limiting of that probe type; compare the modes above before blaming the path."
-    finished
-    exit 3
+    finish_with 3
     ;;
   *)
     verdict "all three modes produced usable reports; no final-hop loss above 1%." \
       "Intermediate-only loss in the hop lists is often control-plane deprioritization, not forwarding loss."
-    finished
+    finish_with 0
     ;;
 esac

@@ -245,11 +245,22 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 | 2+ | Condition found (tool-specific; see `--help`) |
 | 130 | Interrupted (except tools where Ctrl-C is the normal stop: `ringcap`, `splitloss`, `mcastcheck recv`) |
 
-Ctrl-C is a normal way to end a field test, so it prints the report and writes
-`--dump` anyway rather than discarding the run — what was measured before the
-interrupt is still evidence. The assessment says the run was cut short, and
-says so in the direction that matters: a short window that saw no fault has not
-shown the segment is clean, it has only failed to look for long enough.
+Ctrl-C is a normal way to end a field test, so a tool prints its report and
+writes `--dump` anyway rather than discarding the run. Three rules hold across
+every tool:
+
+- Measurements are scaled to what was actually attempted, never to what was
+  requested — loss is counted against the probes sent, not the count asked for.
+- A target the run never reached is reported as not probed, never as clean. An
+  unqueried resolver, an unswept address, and an untried port are absent from
+  the evidence rather than present as passing.
+- A probe cut off mid-flight is discarded, not recorded. Killing `curl` or `dig`
+  looks exactly like a block, and a portal or a filtered port that was never
+  observed must not appear in the report.
+
+An interrupted assessment therefore leans against false confidence: a short
+window that saw no fault has not shown the segment is clean, only that it did
+not look for long enough.
 
 ## Production notes
 
@@ -263,7 +274,7 @@ shown the segment is clean, it has only failed to look for long enough.
   loudly instead of quietly testing the default target.
 - Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
 - JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`).
-- Tools whose run can be cut short record `interrupted` — `dhcpprobe`, `discover`, `linkstat`, and `mcastcheck send`. When it is `true` the payload covers a shortened window, so a clean-looking result means "nothing seen yet", not "nothing there": `linkstat` scales its rates to the window that actually elapsed, `dhcpprobe` having seen one server does not rule out a second, and `discover` reports an unopened mDNS window as `null` rather than as an empty list.
+- Tools whose run can be cut short record `interrupted` — `dhcpprobe`, `discover`, `linkstat`, `mcastcheck send`, `portcheck`, and `webcheck`. When it is `true` the payload covers a shortened run, so a clean-looking result means "nothing seen yet", not "nothing there": `linkstat` scales its rates to the window that actually elapsed, `dhcpprobe` having seen one server does not rule out a second, `discover` reports an unopened mDNS window as `null` rather than as an empty list, and `portcheck` records how many ports it actually probed alongside the total.
 - JSON `--dump` evidence is available on `dhcpprobe`, `linkstat`, `cabletest`, `discover`, `mcastcheck`, `portcheck` and `webcheck`; under `-o DIR` capture those tools dump into the capture directory automatically. The remaining bash tools print terminal evidence only; attach that output (or retained logs via `-d`) to an incident timeline.
 - In a dump, `null` means "not determined" and is never interchangeable with `0` or `""`: an untestable leg, an unknown egress interface, or a measurement the tool could not take all serialize as `null`, so a consumer cannot read them as clean.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.

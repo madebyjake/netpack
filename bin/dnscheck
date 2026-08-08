@@ -67,6 +67,10 @@ Exit codes:
   2  a resolver failed, no upstreams could be identified, or there was
      nothing independent to compare against
   3  resolvers returned conflicting answers
+  130  interrupted; only the resolvers already queried were compared
+
+Ctrl-C stops the run and still reports. Resolvers not reached are listed as not
+queried rather than counted as failures.
 EOF
 }
 
@@ -236,10 +240,27 @@ printf '%-16s %-12s %-10s %-32s %s\n' "resolver" "via" "status" "answers" "rtt"
 declare -a ANSWERS=()
 declare -a STATUSES=()
 
+catch_int
 for row in "${QUERY_ROWS[@]}"; do
   via="${row%%$'\t'*}"
   s="${row#*$'\t'}"
+  # A resolver the run never queried is unmeasured. It must not join STATUSES:
+  # the comparison below reads any non-NOERROR entry as a failure, so recording
+  # one here would report a resolver outage that was never observed.
+  if interrupted; then
+    printf '%-16s %-12s %s\n' "$s" "$via" \
+      "$(color_status warn "not queried — run interrupted")"
+    continue
+  fi
   IFS=$'\t' read -r srv status addrs rtt <<<"$(query_one "$s")"
+  # Ctrl-C kills dig mid-query, so what comes back is a truncated result, not an
+  # answer from the resolver. Recording it would count a resolver failure the
+  # run never actually observed.
+  if interrupted; then
+    printf '%-16s %-12s %s\n' "$s" "$via" \
+      "$(color_status warn "cut short — run interrupted")"
+    continue
+  fi
   # Pad to the header's 10-char status column before coloring; ANSI codes
   # would defeat printf's field width.
   status_pad="$(printf '%-10s' "$status")"
@@ -252,6 +273,20 @@ for row in "${QUERY_ROWS[@]}"; do
   STATUSES+=("$status")
   ANSWERS+=("$addrs")
 done
+release_int
+
+if interrupted; then
+  note "interrupted — the comparison covers only the resolvers queried above"
+fi
+
+# With nothing queried there is no comparison to draw, and a "resolvers agree"
+# verdict drawn from zero resolvers would be the most confident wrong answer the
+# tool could give.
+if [[ ${#STATUSES[@]} -eq 0 ]]; then
+  verdict "interrupted before any resolver was queried; no DNS evidence collected." \
+    "Re-run and allow at least one resolver to answer."
+  finish_with 130
+fi
 
 # Compare: any FAIL / non-NOERROR -> fail; conflicting answer sets among NOERROR -> conflict
 failed=0
@@ -284,40 +319,37 @@ fi
 if (( failed )); then
   verdict "one or more resolvers failed or returned a non-NOERROR status." \
     "Check resolver reachability, captive portals, and local DNS configuration."
-  finished
-  exit 2
+  finish_with 2
 fi
 if (( conflict )); then
   verdict "resolvers returned conflicting answers for the same name." \
     "Compare configured resolvers against the public baseline; suspect hijack, split DNS, or stale cache."
-  finished
-  exit 3
+  finish_with 3
 fi
 if (( ${#RESOLVERS[@]} == 0 )); then
   verdict "public resolver succeeded; no configured resolvers were found." \
     "Inspect /etc/resolv.conf or systemd-resolved configuration."
-  finished
-  exit 2
+  finish_with 2
 fi
 if (( STUB_ONLY )); then
   verdict "only a local forwarding stub answered; the upstreams it forwards to were not tested." \
     "A stub agreeing with the baseline proves nothing about its upstreams — query them directly with -p."
-  finished
-  exit 2
+  finish_with 2
 fi
 # Agreement is only evidence when two different servers produced it. One server
 # queried once (or labelled twice) has nothing to agree with.
 if (( ${#QUERY_ROWS[@]} < 2 )); then
   verdict "only one resolver was available, so there was nothing to compare it against." \
     "Pass -p with a resolver this system does not use to get an independent baseline."
-  finished
-  exit 2
+  finish_with 2
 fi
 if (( BASELINE_SHARED )); then
   verdict "${#QUERY_ROWS[@]} configured resolvers agree, but the baseline was not independent of them." \
     "They cross-check each other; for a true control, re-run with -p set to a resolver the system does not use."
+elif interrupted; then
+  verdict "the resolvers reached before the run was interrupted returned consistent NOERROR answers." \
+    "Resolvers listed as not queried were never compared; re-run to completion."
 else
   verdict "configured and public resolvers returned consistent NOERROR answers."
 fi
-finished
-exit 0
+finish_with 0

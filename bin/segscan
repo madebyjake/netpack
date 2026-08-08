@@ -33,6 +33,10 @@ Exit codes:
   0  inventory completed (sweep may be skipped if noted)
   1  usage, dependency, or refused sweep (too large, or size unknown)
   2  duplicate IP addresses detected
+  130  interrupted; the sweep covers only the addresses it reached
+
+Ctrl-C stops the sweep and still reports. Hosts that answered are real evidence,
+but a partial sweep cannot rule duplicates out — only confirm them.
 EOF
 }
 
@@ -148,8 +152,7 @@ if ! command -v arp-scan >/dev/null 2>&1; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (arp-scan not installed)." \
     "Install arp-scan and re-run for duplicate-IP detection."
-  finished
-  exit 0
+  finish_with 0
 fi
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -159,13 +162,17 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "  $(color_status warn "skipped (no sweep data)")"
   verdict "ARP sweep skipped (root required)." \
     "Re-run with sudo for the sweep and duplicate-IP check."
-  finished
-  exit 0
+  finish_with 0
 fi
 
+# tee keeps whatever the sweep reached before Ctrl-C: a host that answered ARP
+# is on the segment regardless of when the sweep stopped. What a partial sweep
+# cannot support is the negative — see the verdict below.
+catch_int
 arp-scan --interface="$IFACE" --localnet --retry=2 2>/dev/null \
   | tee "$SWEEP" \
   | tail -n +3 || true
+release_int
 
 echo
 echo "=== duplicate IPs ==="
@@ -186,14 +193,27 @@ else
   echo "  $(color_status warn "skipped (no sweep data)")"
 fi
 
+if interrupted; then
+  note "interrupted — the sweep covers only the addresses reached before it stopped"
+fi
+
 if (( DUP_EXIT == 2 )); then
+  # A duplicate is a positive finding: the two MACs really did both answer, so
+  # a partial sweep proves it just as well as a complete one.
   verdict "duplicate IP addresses detected on the segment." \
     "Inspect conflicting MACs above and isolate the unexpected host."
+elif [[ -s "$SWEEP" ]] && interrupted; then
+  # The negative is what a partial sweep cannot support: the duplicate may sit
+  # in the part of the subnet the sweep never reached.
+  verdict "no duplicate IPs among the addresses swept before the run was interrupted." \
+    "The rest of the subnet was not swept; re-run to completion to rule out duplicates."
 elif [[ -s "$SWEEP" ]]; then
   verdict "segment inventory complete; no duplicate IPs in the sweep."
+elif interrupted; then
+  verdict "interrupted before the ARP sweep returned any data." \
+    "Re-run and allow the sweep to complete."
 else
   verdict "segment inventory complete; ARP sweep produced no data." \
     "Check interface state and that arp-scan can reach the segment."
 fi
-finished
-exit "$DUP_EXIT"
+finish_with "$DUP_EXIT"

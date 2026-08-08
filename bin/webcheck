@@ -54,6 +54,10 @@ Exit codes:
   1  usage or dependency error; or -i could not bind an honest probe
   2  no HTTP response from one or more endpoints
   3  unexpected response; portal or HTTP/TLS interception suspected
+  130  interrupted; only the endpoints already probed were tested
+
+Ctrl-C stops the run and still reports. An endpoint not reached is listed as
+not probed rather than counted as a failure.
 EOF
 }
 
@@ -205,11 +209,38 @@ else
 fi
 echo
 echo "=== probes ==="
-probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""
+PROBED=0
+catch_int
+# Each probe is skipped rather than run once Ctrl-C has arrived. An endpoint
+# never contacted must not join the failure count: "no response from 2
+# endpoints" would name a portal the tool never looked for.
+run_probe() {
+  # $1 is the probe function, $2 its URL.
+  if interrupted; then
+    echo "$2"
+    echo "  $(color_status warn "not probed — run interrupted")"
+    return 0
+  fi
+  local prev_failed=$FAILED prev_unexpected=$UNEXPECTED
+  "$@"
+  # Ctrl-C kills curl mid-request, which classifies as "no response" — the same
+  # shape as a real block. Discard it: an interrupted probe is not evidence of a
+  # portal, and counting it would name interception the run never saw.
+  if interrupted; then
+    FAILED=$prev_failed
+    UNEXPECTED=$prev_unexpected
+    echo "  $(color_status warn "cut short by the interrupt; result discarded")"
+    return 0
+  fi
+  PROBED=$((PROBED + 1))
+}
+
+run_probe probe "http://connectivitycheck.gstatic.com/generate_204" 204 ""
 echo
-probe "http://detectportal.firefox.com/success.txt" 200 "success"
+run_probe probe "http://detectportal.firefox.com/success.txt" 200 "success"
 echo
-probe_tls "https://detectportal.firefox.com/success.txt" 200 "success"
+run_probe probe_tls "https://detectportal.firefox.com/success.txt" 200 "success"
+release_int
 
 if [[ -n "$SKEW_S" ]]; then
   echo
@@ -223,6 +254,10 @@ if [[ -n "$SKEW_S" ]]; then
   fi
 fi
 
+if interrupted; then
+  note "interrupted — ${PROBED} of 3 endpoint(s) were probed"
+fi
+
 if (( UNEXPECTED > 0 )); then
   CODE=3
   verdict "unexpected HTTP/TLS response(s); captive portal or interception suspected." \
@@ -231,6 +266,16 @@ elif (( FAILED > 0 )); then
   CODE=2
   verdict "no response from ${FAILED} endpoint(s) (HTTP or HTTPS)." \
     "If splitloss and dnscheck are clean, suspect HTTP/S-specific filtering or a proxy requirement."
+elif (( PROBED == 0 )); then
+  CODE=130
+  verdict "interrupted before any endpoint was probed; no portal evidence collected." \
+    "Re-run and allow at least one probe to complete."
+elif interrupted; then
+  CODE=0
+  # The plain-HTTP probes are what a portal intercepts, so a clean subset is
+  # much weaker evidence than a clean full set.
+  verdict "the ${PROBED} endpoint(s) probed returned expected responses." \
+    "A portal can intercept the endpoints not yet tried; re-run to completion before ruling one out."
 else
   CODE=0
   verdict "connectivity endpoints returned expected responses; no portal indicated."
@@ -242,7 +287,8 @@ if [[ -n "$DUMP_PATH" ]]; then
   dump_num clock_skew_s "$SKEW_S"
   dump_num unexpected "$UNEXPECTED"
   dump_num failed "$FAILED"
-  dump_write "$DUMP_PATH" webcheck "$CODE" || true
+  dump_num probed "$PROBED"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  dump_write "$DUMP_PATH" webcheck "$(interrupted && echo 130 || echo "$CODE")" || true
 fi
-finished
-exit "$CODE"
+finish_with "$CODE"
