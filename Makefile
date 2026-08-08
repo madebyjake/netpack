@@ -13,7 +13,8 @@ REPO := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 # The # is escaped because make 3.81 (macOS) reads an unescaped one inside
 # $(shell ...) as a comment and truncates the call; 4.x does not care either way.
 SHELL_SCRIPTS = $(shell \
-	find $(REPO)/bin -type f -exec awk 'FNR == 1 && /^\#!.*bash/ { print FILENAME }' {} + | sort; \
+	find $(REPO)/bin $(REPO)/tests/docker -type f \
+	  -exec awk 'FNR == 1 && /^\#!.*bash/ { print FILENAME }' {} + | sort; \
 	find $(REPO)/lib -type f -name '*.sh' | sort)
 PY_TOOLS = bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck bin/cabletest
 

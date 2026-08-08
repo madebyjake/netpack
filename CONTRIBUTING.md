@@ -91,6 +91,36 @@ Type annotations are not required everywhere, but new code should not need
 unnecessary once scapy shipped `py.typed`; a suppression that outlives its
 cause hides the next real error.
 
+## Running the tools for real
+
+`make check` proves the Linux-only tools parse and answer `--help`; it cannot
+run them. `tests/docker/run` does, in Debian containers:
+
+```bash
+tests/docker/run          # everything
+tests/docker/run tools    # single-container tools
+tests/docker/run pairs    # testsrv/testcli and mcastcheck send/recv
+tests/docker/run suite    # bats, pytest and smoke inside the container
+tests/docker/run clean    # remove containers, networks and images
+```
+
+It needs Docker, `NET_ADMIN` and `NET_RAW`, so it is not part of `make check`
+and does not run in CI. Treat it as a pre-release gate.
+
+What it covers that nothing else can: a live ARP sweep, `dnsmasq` answering a
+DHCP probe (and two of them reproducing the rogue-server case), an iperf3 pair,
+a multicast pair, a VLAN sub-interface that has to survive `SIGTERM` cleanup, a
+network built with a reduced MTU, and a route carrying a stale MTU — the case
+that had `mtucheck` report a reduction the network did not have.
+
+On an ARM Mac the containers are arm64, which is the field target's
+architecture.
+
+Two things it cannot reach: Wi-Fi, since a container has no radio, and a real
+PHY, so `cabletest` only exercises its unsupported-driver path. Both are what
+they are; the tools report those states correctly, which is what the checks
+assert.
+
 ## Adding a tool
 
 1. Write `bin/<tool>`, executable, with `--help` and documented exit codes.
