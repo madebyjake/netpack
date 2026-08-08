@@ -249,8 +249,7 @@ def run_recv(
             ],
             "assessment_code": code,
         }
-        path = report.write_dump(dump, payload)
-        print(f"dump: {path}")
+        report.emit_dump(dump, payload)
 
     report.finished()
     return code
@@ -345,8 +344,7 @@ def run_send(
             "interrupted": interrupted,
             "assessment_code": code,
         }
-        path = report.write_dump(dump, payload)
-        print(f"dump: {path}")
+        report.emit_dump(dump, payload)
 
     report.finished()
     return code

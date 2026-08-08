@@ -593,8 +593,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             if dora is not None:
                 payload["dora"] = dora
-            path = report.write_dump(args.dump, payload)
-            print(f"dump: {path}")
+            report.emit_dump(args.dump, payload)
 
         report.finished()
         return code

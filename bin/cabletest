@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             "pairs": results,
             "assessment_code": code,
         }
-        print(f"dump: {report.write_dump(args.dump, payload)}")
+        report.emit_dump(args.dump, payload)
 
     report.finished()
     return code

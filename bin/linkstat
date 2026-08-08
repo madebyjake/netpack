@@ -337,8 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             "carrier_changes_delta": flaps,
             "assessment_code": code,
         }
-        path = report.write_dump(args.dump, payload)
-        print(f"dump: {path}")
+        report.emit_dump(args.dump, payload)
 
     report.finished()
     return code
