@@ -121,6 +121,11 @@ multihomed_note "$VIA"
 # Not exec: the run has to come back here to close the report, and to map
 # iperf3's exit status onto the documented codes.
 RC=0
+# iperf3 treats SIGINT as a normal end: iperf_got_sigend calls
+# iperf_signormalexit, which exits 0 after printing the partial results. So the
+# exit status cannot distinguish a cut-short run from a completed one — this
+# has to observe the signal itself, as testsrv already does.
+catch_int
 if [[ "$UDP" -eq 1 ]]; then
   echo "mode: UDP  bandwidth ${BANDWIDTH}  length ${LENGTH}  streams ${STREAMS}"
   warning "generates significant traffic"
@@ -131,8 +136,11 @@ else
   warning "generates significant traffic"
   iperf3 -c "$HOST" -p "$PORT" "${EXTRA[@]+"${EXTRA[@]}"}" -t "$DURATION" || RC=$?
 fi
+release_int
 
-if (( RC == 130 )); then
+# RC 130 is kept for the case where iperf3 is killed outright rather than
+# handling the signal.
+if interrupted || (( RC == 130 )); then
   verdict "run interrupted; the figures above cover the completed portion only." \
     "Re-run for a full window before treating the throughput as evidence."
   finished
