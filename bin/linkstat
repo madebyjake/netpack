@@ -293,10 +293,9 @@ def main(argv: list[str] | None = None) -> int:
     bytes_before = snap_bytes(iface)
     carrier_before = read_carrier_changes(iface)
     report.progress(f"sampling {timeout:g}s on {iface} ...")
-    # Ctrl-C ends the window early rather than discarding it: an operator who
-    # sees the fault appear mid-sample stops there, and the counters gathered so
-    # far are the evidence. The window measured is what elapsed, not what was
-    # asked for — billing a 4s sample as 30s would divide the rates by seven.
+    # Ctrl-C ends the window early; the counters gathered so far are the
+    # evidence. Rates use the window that elapsed, not the one requested —
+    # billing a 4s sample as 30s divides them by seven.
     interrupted = False
     sample_start = time.monotonic()
     try:

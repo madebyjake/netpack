@@ -1,18 +1,10 @@
 """Verdict selection for the Python tools (no I/O; unit-testable).
 
-A verdict is the part of a report an operator acts on, and the exit code is
-what a script acts on. Both were decided inline in `bin/`, where they could
-only be exercised by running the tool against real hardware — so the branches
-that matter most, the ones reached when a run is cut short, had no coverage at
-all.
+Takes measurements, returns the decision; `bin/` prints it. Decided inline in
+`bin/` before, where exercising it needed real hardware — so the interrupted
+branches had no coverage.
 
-These functions take the measurements and return the decision. `bin/` keeps the
-printing, per the lib/bin split.
-
-The interrupted branches exist because a truncated run must not read as a clean
-one: a short window that saw no fault has not shown the link is healthy, it has
-only failed to look for long enough. Each of these leans the assessment against
-that false confidence rather than restating the clean wording.
+Those branches exist because a cut-short run must not read as a clean one.
 """
 
 from __future__ import annotations
@@ -33,9 +25,8 @@ EXIT_INTERRUPT = 130
 class Verdict:
     """What to print, and what to exit with.
 
-    `code` is the tool's own classification. An interrupted run still reports
-    what it found, but exits 130 — the caller applies that, so the finding and
-    the "did not complete" signal stay separable here.
+    `code` is the tool's classification. The caller downgrades an interrupted
+    run to 130, keeping the finding and the "did not complete" signal separate.
     """
 
     code: int
@@ -57,13 +48,11 @@ def link_counters(
 ) -> Verdict:
     """Classify linkstat's counter deltas.
 
-    Precedence is physical > carrier flap > congestion > clean: an error count
-    and a drop count that both moved are one fault, and the physical layer is
-    the one to chase first. The lower-priority findings still appear, as an
-    "Also:" clause, so nothing observed is dropped from the report.
+    Precedence: physical > carrier flap > congestion > clean. Lower-priority
+    findings still appear as an "Also:" clause, so nothing observed is dropped.
 
-    Wi-Fi carrier changes are not a flap fault — they move on roam and reassoc —
-    so they never reach the flap verdict. The caller notes them separately.
+    Wi-Fi carrier changes move on roam and reassoc, so they never reach the flap
+    verdict; the caller notes them separately.
     """
     notes: list[str] = []
     if errors > 0 and drops > 0:
@@ -122,9 +111,8 @@ def dhcp_offers(
 ) -> Verdict:
     """Classify dhcpprobe's offers.
 
-    `dora_state` is None unless --full ran. A single server that offered but
-    never ACKed is its own finding, and outranks the interrupted wording: it was
-    observed, not merely not-yet-contradicted.
+    `dora_state` is None unless --full ran. An offer without an ACK outranks the
+    interrupted wording: it was observed, not merely not-yet-contradicted.
     """
     if offer_count == 0:
         if interrupted:
@@ -150,8 +138,8 @@ def dhcp_offers(
                 "check the server's lease log.",
             )
         if interrupted:
-            # The one branch a truncated window can reach wrongly: a second
-            # server answering later was never waited for.
+            # The branch a truncated window reaches wrongly: a second server
+            # answering later was never waited for.
             return Verdict(
                 EXIT_OK,
                 "one DHCP server responded before the run was interrupted.",
@@ -177,21 +165,19 @@ def discovery(
 ) -> Verdict:
     """Classify discover's responders.
 
-    `host_count` is the union of the two protocols, not their sum: a device that
-    answers both SSDP and mDNS is one host on the segment, and adding the counts
-    would report it twice.
+    `host_count` is the union of the two protocols, not their sum: a device
+    answering both is one host.
 
     Zero responders is a valid result, never a condition, so the code stays 0
-    throughout. What changes is whether the wording supports the conclusion an
-    operator would otherwise draw from it.
+    throughout; only the wording changes.
     """
     total = host_count
     scope = "SSDP only" if not mdns_searched else f"SSDP {ssdp_count}, mDNS {mdns_count}"
 
     if total == 0:
         if interrupted:
-            # A silent segment and a window closed after half a second are
-            # indistinguishable here, so this must not read as "nothing there".
+            # A silent segment and a half-second window are indistinguishable
+            # here, so this must not read as "nothing there".
             return Verdict(
                 EXIT_OK,
                 "no responders seen before the run was interrupted.",

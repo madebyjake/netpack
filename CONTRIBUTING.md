@@ -152,26 +152,20 @@ without `-y`.
 Print the report and write `--dump` anyway, and say in the assessment that the
 run was cut short.
 
-Bash tools use one idiom for this, from `lib/netpack.sh`: `catch_int` arms the
-handler, `interrupted` tests it, `release_int` restores default handling, and
-`finish_with CODE` closes the report while downgrading the status to 130. Break
-the work loop on `interrupted`, or the trap only swallows Ctrl-C and the tool
-looks unresponsive. Python tools do the same with a flag and a `try/except
-KeyboardInterrupt` around the measurement, never around the report.
+Bash uses `lib/netpack.sh`: `catch_int` arms the handler, `interrupted` tests
+it, `release_int` restores default handling, `finish_with CODE` closes the
+report and downgrades the status to 130. Break the work loop on `interrupted`,
+or the trap swallows Ctrl-C and the tool looks unresponsive. Python uses a flag
+and `try/except KeyboardInterrupt` around the measurement, never the report.
 
-Three rules follow, and each was being broken before they were written down:
+- Scale rates to what was attempted: one loss in 80 sent is 1.2%, not the 0.5%
+  a requested 200 gives.
+- A target never reached is unmeasured — `null`, not a clean zero.
+- Discard a probe cut off mid-flight; an interrupted `curl` or `dig` is
+  indistinguishable from a block.
 
-- Scale measurements to what was attempted, not what was requested. One loss in
-  eighty sent is 1.2%; divided by a requested two hundred it reads as 0.5%.
-- A target the run never reached is unmeasured. Report it as not probed, with
-  `null` figures — never as a clean zero.
-- Discard a probe cut off mid-flight. Killing `curl` or `dig` looks exactly like
-  a block, and a portal or filtered port that was never observed must not reach
-  the report.
-
-`ringcap`, `splitloss` and `mcastcheck recv` are the exceptions where Ctrl-C is
-the *normal* stop: they use the same helpers but exit on their own terms rather
-than 130.
+`ringcap`, `splitloss` and `mcastcheck recv` treat Ctrl-C as the normal stop and
+exit on their own terms rather than 130.
 
 ## Commits and branches
 

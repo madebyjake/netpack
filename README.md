@@ -245,22 +245,15 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 | 2+ | Condition found (tool-specific; see `--help`) |
 | 130 | Interrupted (except tools where Ctrl-C is the normal stop: `ringcap`, `splitloss`, `mcastcheck recv`) |
 
-Ctrl-C is a normal way to end a field test, so a tool prints its report and
-writes `--dump` anyway rather than discarding the run. Three rules hold across
-every tool:
+Ctrl-C prints the report and writes `--dump` rather than discarding the run:
 
-- Measurements are scaled to what was actually attempted, never to what was
-  requested — loss is counted against the probes sent, not the count asked for.
-- A target the run never reached is reported as not probed, never as clean. An
-  unqueried resolver, an unswept address, and an untried port are absent from
-  the evidence rather than present as passing.
-- A probe cut off mid-flight is discarded, not recorded. Killing `curl` or `dig`
-  looks exactly like a block, and a portal or a filtered port that was never
-  observed must not appear in the report.
+- Rates are scaled to what was attempted, not what was requested.
+- A target never reached is reported as not probed, with `null` figures — never
+  as a clean zero.
+- A probe cut off mid-flight is discarded; an interrupted `curl` or `dig` is
+  indistinguishable from a block.
 
-An interrupted assessment therefore leans against false confidence: a short
-window that saw no fault has not shown the segment is clean, only that it did
-not look for long enough.
+A cut-short run that saw no fault has not shown the segment is clean.
 
 ## Production notes
 
@@ -274,9 +267,9 @@ not look for long enough.
   loudly instead of quietly testing the default target.
 - Tool reports open with a local ISO-8601 start timestamp (`tool — 2026-07-18T18:30:00-07:00`) and close with `finished: …` once the summary is printed, so a report always carries its own start and end times.
 - JSON `--dump` files carry the run's fields plus `tool`, `timestamp`, and `assessment_code` (the exit code the run produced). `dhcpprobe` also records `assessment` (`none`/`single`/`multiple`).
-- Tools whose run can be cut short record `interrupted` — `dhcpprobe`, `discover`, `linkstat`, `mcastcheck send`, `portcheck`, and `webcheck`. When it is `true` the payload covers a shortened run, so a clean-looking result means "nothing seen yet", not "nothing there": `linkstat` scales its rates to the window that actually elapsed, `dhcpprobe` having seen one server does not rule out a second, `discover` reports an unopened mDNS window as `null` rather than as an empty list, and `portcheck` records how many ports it actually probed alongside the total.
+- Tools whose run can be cut short record `interrupted`: `dhcpprobe`, `discover`, `dnscheck`, `linkstat`, `mcastcheck send`, `mtucheck`, `portcheck`, `segscan`, `splitloss`, `udp-loss`, `webcheck`. When `true`, the payload covers a shortened run and a clean-looking result means "nothing seen yet", not "nothing there".
 - JSON `--dump` evidence is available on `cabletest`, `dhcpprobe`, `discover`, `dnscheck`, `linkstat`, `mcastcheck`, `mtucheck`, `portcheck`, `segscan`, `splitloss`, `udp-loss` and `webcheck`; under `-o DIR` capture those tools dump into the capture directory automatically. The rest print terminal evidence only — `path3` and `testcli` wrap `mtr` and `iperf3`, which emit their own JSON, and `doctor`, `ringcap` and `testsrv` produce a readiness check, pcap files and a server session rather than a measurement. Attach their output (or retained logs via `-d`) to an incident timeline.
-- A dump distinguishes "measured" from "not measured" with a state field rather than a sentinel number: `mtucheck` records `gw_state`/`wan_state` (`measured`, `blocked`, `not_probed`, `untestable_via_iface`), `segscan` records `sweep_state` (`completed`, `partial`, `skipped_no_root`, `skipped_no_arp_scan`), and `udp-loss`, `dnscheck` and `splitloss` mark each target `queried`/`measured`. A leg that was never probed carries `null` figures, so it cannot be read as a clean zero.
+- "Not measured" is a state field, not a sentinel number: `mtucheck` has `gw_state`/`wan_state` (`measured`, `blocked`, `not_probed`, `untestable_via_iface`), `segscan` has `sweep_state` (`completed`, `partial`, `skipped_no_root`, `skipped_no_arp_scan`), and `udp-loss`, `dnscheck` and `splitloss` mark each target `queried`/`measured`. An unprobed leg carries `null` figures.
 - In a dump, `null` means "not determined" and is never interchangeable with `0` or `""`: an untestable leg, an unknown egress interface, or a measurement the tool could not take all serialize as `null`, so a consumer cannot read them as clean.
 - `wifiscan` triggers an active scan that briefly interrupts the interface's current Wi-Fi association; run it when a short drop is acceptable.
 - `discover` sends its queries via the default-route interface; on a multi-homed machine the segment under test is often not the default route, so pass `-i` to pin it (for example `discover -i eth0`).

@@ -188,28 +188,18 @@ is_uint() {
 
 # --- interruption -------------------------------------------------------------
 #
-# Ctrl-C is a normal way to end a field test, so a tool prints its report and
-# writes its --dump anyway rather than dying mid-run. Without a trap the shell
-# takes SIGINT's default action and the whole run is lost, evidence included.
+# Without a trap, SIGINT's default action loses the run and its evidence.
 #
-#   catch_int     arm the handler; Ctrl-C then sets a flag instead of exiting
+#   catch_int     arm the handler; Ctrl-C sets a flag instead of exiting
 #   interrupted   true once it has arrived
 #   release_int   restore default handling, before the report is printed
 #
-# SIGINT reaches every process in the foreground group, so the child under way
-# (ping, dig, curl, arp-scan) exits on its own and its partial output is already
-# on disk. These helpers only keep the shell alive long enough to summarize it.
+# SIGINT reaches the whole foreground group, so the child (ping, dig, curl,
+# arp-scan) exits on its own and its partial output is already on disk. These
+# keep the shell alive long enough to summarize it.
 #
-# Two rules for callers, both of which have bitten this project:
-#
-#   Break the work loop on `interrupted`, or the trap merely swallows Ctrl-C and
-#   the tool runs on looking unresponsive.
-#
-#   Compute rates against what was actually attempted, never the figure that was
-#   requested. One query lost of eighty sent is 1.2% loss; divided by the two
-#   hundred that were planned it reads as 0.5% and understates the fault. A
-#   target the run never reached is unmeasured, and must be reported as such
-#   rather than as a clean zero.
+# Callers must break the work loop on `interrupted`; otherwise the trap swallows
+# Ctrl-C and the tool runs on looking unresponsive.
 NP_INTERRUPTED=0
 
 catch_int() {
@@ -226,10 +216,9 @@ release_int() {
 }
 
 # finish_with CODE — close the report and exit, downgrading to 130 when the run
-# was cut short. The assessment above still states what was found; the status
-# says the run did not complete, so a caller cannot read a partial run as a
-# finished one. Tools where Ctrl-C is the normal stop (ringcap, splitloss,
-# mcastcheck recv) exit on their own terms and do not use this.
+# was cut short, so a partial run cannot be read as a finished one. The
+# assessment still states what was found. Tools where Ctrl-C is the normal stop
+# (ringcap, splitloss, mcastcheck recv) exit on their own terms instead.
 finish_with() {
   finished
   if interrupted; then

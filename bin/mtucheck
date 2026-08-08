@@ -196,12 +196,11 @@ color_mtu() {
   fi
 }
 
-# A leg's state, not just its number. "0 bytes" and "never probed" are different
-# findings that a bare integer cannot tell apart: blocked DF probes are a real
-# result, an unprobed leg is the absence of one.
-#   measured   the binary search returned a size that passed
+# A leg's state, not just its number: blocked probes are a result, an unprobed
+# leg is the absence of one, and 0 cannot say which.
+#   measured   the search returned a size that passed
 #   blocked    probes ran and none succeeded
-#   not_probed the leg was skipped (unroutable binding, or interrupted first)
+#   not_probed skipped (unroutable binding, or interrupted first)
 GW_STATE=measured
 if (( gw_total == 0 )); then
   GW_STATE=$(interrupted && echo not_probed || echo blocked)
