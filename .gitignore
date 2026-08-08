@@ -7,9 +7,19 @@ venv/
 # Evidence artefacts. Tools write reports, JSON dumps and captures wherever the
 # operator points them, which is often the working directory during
 # development. None of it belongs in the repository.
-*.pcap
+#
+# --dump takes an arbitrary path, so there is no filename pattern that catches
+# every dump; the rule stays broad rather than let a captured topology reach a
+# commit. Config that does belong in the tree is named below — add to that list
+# rather than narrowing the rule, or the next dump lands in a diff.
+# pcap* not pcap: tcpdump's -C rotation appends a number, so ringcap writes
+# cap.pcap0, cap.pcap1 … and pads with leading zeros past nine files. The
+# trailing wildcard also covers pcapng.
+*.pcap*
 *.log
 *.json
+!.mcp.json
+!tests/**/*.json
 .DS_Store
 .pytest_cache/
 .ruff_cache/
