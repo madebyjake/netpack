@@ -77,8 +77,12 @@ ip -br addr show dev "$IFACE" || true
 echo
 echo "=== LLDP neighbor ==="
 if command -v lldpcli >/dev/null 2>&1; then
-  if out="$(lldpcli show neighbors summary 2>/dev/null)"; then
-    filtered="$(printf '%s\n' "$out" | grep -E 'SysName|PortID|PortDescr|MgmtIP|Interface' || true)"
+  # details, not summary: lldpd's brief view returns after SysName, so MgmtIP
+  # is never printed and the grep below could not match it — the address you
+  # need to reach the switch was the one field missing. The grep keeps the
+  # output as short as the summary was.
+  if out="$(lldpcli show neighbors details 2>/dev/null)"; then
+    filtered="$(printf '%s\n' "$out" | lldp_fields)"
     if [[ -n "$filtered" ]]; then
       printf '%s\n' "$filtered"
     else

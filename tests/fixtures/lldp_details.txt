@@ -1,0 +1,19 @@
+-------------------------------------------------------------------------------
+LLDP neighbors:
+-------------------------------------------------------------------------------
+Interface:    eth0, via: LLDP, RID: 1, Time: 0 day, 00:12:34
+  Chassis:     
+    ChassisID:    mac 00:11:22:33:44:55
+    SysName:      core-sw-01
+    SysDescr:     Cisco IOS Software, C9300 Software
+    MgmtIP:       10.0.0.2
+    MgmtIface:    5001
+    Capability:   Bridge, on
+    Capability:   Router, on
+  Port:        
+    PortID:       ifname GigabitEthernet1/0/12
+    PortDescr:    Uplink to AV rack
+    TTL:          120
+    PMD autoneg:  supported: yes, enabled: yes
+  VLAN:        100, pvid: yes  AV-Media
+-------------------------------------------------------------------------------

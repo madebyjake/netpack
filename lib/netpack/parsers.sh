@@ -260,6 +260,17 @@ classify_sweep() {
 # arp-scan's retries print the same IP+MAC repeatedly and annotate them with
 # "(DUP: n)"; that is one host answering twice, not an address conflict, so
 # pairs are deduplicated before an IP is counted as contested.
+# Keep the fields worth reading from `lldpcli show neighbors details`: which
+# switch, which port, and the address to reach it on. details rather than
+# summary because lldpd's brief view returns after SysName, so MgmtIP is never
+# printed — and that is the field that says how to reach the switch.
+#
+# MgmtIface, SysDescr, TTL, PMD and VLAN lines are dropped: they push the useful
+# lines off a small screen without changing what the operator does next.
+lldp_fields() {
+  grep -E 'SysName|PortID|PortDescr|MgmtIP|Interface' "${1:--}" || true
+}
+
 arp_duplicates() {
   awk '
     /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]/ {
