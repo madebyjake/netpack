@@ -86,7 +86,10 @@ Exit codes:
   2  physical-layer counter growth
   3  congestion/drop counter growth
   4  ethernet carrier flaps (without error growth)
-  130  interrupted before the sample completed
+  130  interrupted; the report and dump cover the shortened window
+
+Ctrl-C ends the sample early and still reports: the counters gathered so far
+are the evidence, and rates are computed against the window that elapsed.
 """
 
 
@@ -171,15 +174,19 @@ def _have(cmd: str) -> bool:
 
 def print_report(
     iface: str,
-    timeout: float,
+    window: float,
     deltas: dict[str, int],
     byte_deltas: dict[str, int],
     flaps: int,
     info: dict[str, str],
     wireless: bool,
+    interrupted: bool = False,
 ) -> int:
     report.header("linkstat")
-    print(f"iface: {iface}  sample: {timeout:g}s")
+    if interrupted:
+        print(f"iface: {iface}  sample: {window:.1f}s (interrupted)")
+    else:
+        print(f"iface: {iface}  sample: {window:g}s")
 
     report.section("link")
     if info:
@@ -203,7 +210,7 @@ def print_report(
     for name in BYTE_COUNTERS:
         label = name.split("_")[0]
         print(
-            f"  {label}: {mbit_s(byte_deltas[name], timeout):.2f} Mbit/s "
+            f"  {label}: {mbit_s(byte_deltas[name], window):.2f} Mbit/s "
             f"({byte_deltas[name] / 1e6:.1f} MB)"
         )
 
@@ -235,6 +242,9 @@ def print_report(
             else report.color_status("bad", f"{flaps:12d}")
         )
         print(f"  {label:<16} {flap_s}")
+
+    if interrupted:
+        report.warning(f"interrupted after {window:.1f}s; counters cover that window only")
 
     notes: list[str] = []
     if err > 0 and drp > 0:
@@ -281,10 +291,18 @@ def print_report(
         )
         return EXIT_CONGESTION
 
-    report.verdict(
-        "no error or drop growth during the sample window.",
-        "Re-run while the symptom is present.",
-    )
+    if interrupted:
+        report.verdict(
+            f"no error or drop growth in the {window:.1f}s sampled before the run "
+            "was interrupted.",
+            "A short window sees little; re-run to completion while the symptom "
+            "is present before reading this as clean.",
+        )
+    else:
+        report.verdict(
+            "no error or drop growth during the sample window.",
+            "Re-run while the symptom is present.",
+        )
     return EXIT_OK
 
 
@@ -322,11 +340,17 @@ def main(argv: list[str] | None = None) -> int:
     bytes_before = snap_bytes(iface)
     carrier_before = read_carrier_changes(iface)
     report.progress(f"sampling {timeout:g}s on {iface} ...")
+    # Ctrl-C ends the window early rather than discarding it: an operator who
+    # sees the fault appear mid-sample stops there, and the counters gathered so
+    # far are the evidence. The window measured is what elapsed, not what was
+    # asked for — billing a 4s sample as 30s would divide the rates by seven.
+    interrupted = False
+    sample_start = time.monotonic()
     try:
         time.sleep(timeout)
     except KeyboardInterrupt:
-        print("error: interrupted", file=sys.stderr)
-        return EXIT_INTERRUPT
+        interrupted = True
+    window = max(time.monotonic() - sample_start, 0.001) if interrupted else timeout
     after = snap_counters(iface)
     bytes_after = snap_bytes(iface)
     carrier_after = read_carrier_changes(iface)
@@ -334,13 +358,18 @@ def main(argv: list[str] | None = None) -> int:
     byte_deltas = {k: max(0, bytes_after[k] - bytes_before[k]) for k in BYTE_COUNTERS}
     flaps = max(0, carrier_after - carrier_before)
 
-    code = print_report(iface, timeout, deltas, byte_deltas, flaps, info, wireless)
+    code = print_report(
+        iface, window, deltas, byte_deltas, flaps, info, wireless, interrupted
+    )
+    if interrupted:
+        code = EXIT_INTERRUPT
 
     if args.dump:
         payload: dict[str, Any] = {
             "tool": "linkstat",
             "iface": iface,
-            "timeout_s": timeout,
+            "timeout_s": window,
+            "interrupted": interrupted,
             "wireless": wireless,
             "link": info,
             "before": before,

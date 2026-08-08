@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ipaddress
 import random
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -71,7 +72,12 @@ Exit codes:
   2  no DHCP response
   3  multiple DHCP servers
   4  offer received but REQUEST not ACKed (--full only)
-  130  interrupted before the listen window completed
+  130  interrupted; the report and dump cover the offers already received
+
+Ctrl-C ends the listen window and still reports: a server that answered is on
+the segment regardless of when listening stopped. An interrupted window skips
+the --full DORA exchange rather than binding an address after the operator
+asked the tool to stop.
 """
 
 
@@ -338,7 +344,7 @@ def iface_mac(iface: str) -> str:
 
 def collect_offers(
     iface: str, timeout: float, verbose: bool
-) -> tuple[list[dict[str, Any]], int, str]:
+) -> tuple[list[dict[str, Any]], int, str, bool]:
     from scapy.layers.dhcp import DHCP  # type: ignore
     from scapy.sendrecv import sendp, sniff  # type: ignore
 
@@ -364,15 +370,32 @@ def collect_offers(
             print(f"sending DHCPDISCOVER on {iface} xid=0x{xid:08x}", file=sys.stderr)
         sendp(pkt, iface=iface, verbose=0)
 
+    # scapy's sniff() catches KeyboardInterrupt itself and returns the packets
+    # captured so far — it re-raises only under chainCC, which discards them. So
+    # the offers already survive Ctrl-C, but the interrupt is invisible to the
+    # caller, and a window cut short after one second would otherwise be
+    # reported as a full listen. This handler records that it happened while
+    # still raising, so sniff unwinds normally and hands back its batch.
+    interrupted = False
+
+    def on_sigint(_signum: int, _frame: Any) -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise KeyboardInterrupt
+
     # Arm sniff first; send DISCOVER from started_callback to avoid missing fast offers.
-    batch = sniff(
-        iface=iface,
-        filter="udp and (port 67 or port 68)",
-        timeout=timeout,
-        lfilter=is_offer,
-        store=True,
-        started_callback=on_started,
-    )
+    previous = signal.signal(signal.SIGINT, on_sigint)
+    try:
+        batch = sniff(
+            iface=iface,
+            filter="udp and (port 67 or port 68)",
+            timeout=timeout,
+            lfilter=is_offer,
+            store=True,
+            started_callback=on_started,
+        )
+    finally:
+        signal.signal(signal.SIGINT, previous)
     for p in batch:
         parsed = parse_offer(p)
         key = parsed.get("server_id") or parsed.get("server_mac") or parsed.get("src_ip")
@@ -382,7 +405,7 @@ def collect_offers(
         if verbose:
             print(f"offer from {key}", file=sys.stderr)
 
-    return list(offers.values()), xid, mac
+    return list(offers.values()), xid, mac, interrupted
 
 
 def print_dora(dora: dict[str, Any], timeout: float) -> None:
@@ -417,9 +440,10 @@ def print_report(
     timeout: float,
     offers: list[dict[str, Any]],
     dora: dict[str, Any] | None = None,
+    interrupted: bool = False,
 ) -> None:
     report.header("dhcpprobe")
-    print(f"iface: {iface}  timeout: {timeout:g}s")
+    print(f"iface: {iface}  timeout: {timeout:g}s{'  (interrupted)' if interrupted else ''}")
     if not iface_is_up(iface):
         report.note("interface is administratively or operatively down")
 
@@ -450,11 +474,22 @@ def print_report(
     if dora is not None:
         print_dora(dora, timeout)
 
+    if interrupted:
+        report.warning("interrupted; the listen window did not run to completion")
+
     if len(offers) == 0:
-        report.verdict(
-            "no DHCP response. Server unreachable, wrong VLAN, or no scope on this segment.",
-            "Confirm interface/VLAN membership and that a DHCP service is expected here.",
-        )
+        if interrupted:
+            # Silence here proves nothing: the window may have closed before a
+            # server had time to answer.
+            report.verdict(
+                "no DHCP response before the run was interrupted.",
+                "Too short to conclude anything; re-run to completion.",
+            )
+        else:
+            report.verdict(
+                "no DHCP response. Server unreachable, wrong VLAN, or no scope on this segment.",
+                "Confirm interface/VLAN membership and that a DHCP service is expected here.",
+            )
     elif len(offers) == 1:
         if dora is not None and dora.get("state") != "ack":
             report.verdict(
@@ -462,11 +497,21 @@ def print_report(
                 "Suspect a full pool, reservation conflict, or relay breakage; "
                 "check the server's lease log.",
             )
+        elif interrupted:
+            # "Single server" is the clean result, and a truncated window is the
+            # one way to reach it wrongly — a second server answering later was
+            # simply never waited for.
+            report.verdict(
+                "one DHCP server responded before the run was interrupted.",
+                "This does not rule out a second server; re-run to completion "
+                "before treating the segment as clean.",
+            )
         else:
             report.verdict("single DHCP server responded.")
     else:
         report.verdict(
-            f"{len(offers)} DHCP servers responded on this segment.",
+            f"{len(offers)} DHCP servers responded on this segment"
+            f"{' before the run was interrupted' if interrupted else ''}.",
             "Compare server identifiers and isolate unexpected responders.",
         )
 
@@ -529,15 +574,24 @@ def main(argv: list[str] | None = None) -> int:
         if vlan_created:
             print(f"created VLAN sub-interface {iface} (removed on exit)", file=sys.stderr)
 
+    offers: list[dict[str, Any]] = []
+    dora: dict[str, Any] | None = None
+    interrupted = False
     try:
         try:
-            offers, xid, mac = collect_offers(iface, args.timeout, args.verbose)
-            dora: dict[str, Any] | None = None
-            if args.full and offers:
+            offers, xid, mac, interrupted = collect_offers(
+                iface, args.timeout, args.verbose
+            )
+            # A window the operator cut short is not a window to start a DORA
+            # exchange in: they asked the tool to stop, and --full would bind an
+            # address and appear in the server's lease log after that request.
+            if args.full and offers and not interrupted:
                 dora = complete_dora(iface, mac, xid, offers[0], args.timeout, args.verbose)
         except KeyboardInterrupt:
-            print("error: interrupted", file=sys.stderr)
-            return EXIT_INTERRUPT
+            # Reached only from the DORA exchange, which runs after the offers
+            # are already collected. Those offers are the primary evidence —
+            # one server or several is the whole finding — so report them.
+            interrupted = True
         except PermissionError:
             print(
                 "error: permission denied sending/sniffing; re-run with sudo",
@@ -548,11 +602,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_ERROR
 
-        print_report(iface, args.timeout, offers, dora)
+        print_report(iface, args.timeout, offers, dora, interrupted)
 
         code = EXIT_NONE if not offers else EXIT_MULTI if len(offers) > 1 else EXIT_OK
         if code == EXIT_OK and dora is not None and dora.get("state") != "ack":
             code = EXIT_NOACK
+        if interrupted:
+            code = EXIT_INTERRUPT
 
         if args.dump:
             payload = {
@@ -561,6 +617,7 @@ def main(argv: list[str] | None = None) -> int:
                 "timeout_s": args.timeout,
                 "offer_count": len(offers),
                 "offers": offers,
+                "interrupted": interrupted,
                 "assessment_code": code,
                 "assessment": (
                     "none"
