@@ -1,4 +1,4 @@
-# Guided playbooks: the ordered sequences that turn seventeen tools into a
+# Guided playbooks: the ordered sequences that turn a box of tools into a
 # procedure. Sourced by bin/netpack (the `p` menu key and the `playbook`
 # subcommand) and restated in README.md, which tests/test_docs.py enforces.
 # shellcheck shell=bash
