@@ -91,3 +91,18 @@ def write_dump(path: str | Path, payload: dict[str, Any]) -> Path:
         json.dump(data, fh, indent=2, sort_keys=True)
         fh.write("\n")
     return out
+
+
+def emit_dump(path: str | Path, payload: dict[str, Any]) -> None:
+    """Write the dump, or warn and carry on.
+
+    The terminal report is the primary evidence, so a dump that cannot be
+    written must not take the rest of the report with it. An unwritable path
+    used to raise through main(): the traceback replaced the closing line and
+    the exit status became 1, discarding the assessment the run had reached.
+    Mirrors dump_write in lib/netpack.sh, which warns rather than aborting.
+    """
+    try:
+        print(f"dump: {write_dump(path, payload)}")
+    except OSError as exc:
+        warning(f"could not write dump to {path}: {exc}", file=sys.stderr)

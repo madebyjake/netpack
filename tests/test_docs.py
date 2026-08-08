@@ -178,7 +178,9 @@ def test_every_dump_payload_carries_the_required_keys() -> None:
     pass on a single occurrence."""
     for name in json_tools():
         src = (ROOT / "bin" / name).read_text()
-        py_dumps = src.count("report.write_dump(")
+        # emit_dump is the wrapper that warns instead of raising; write_dump is
+        # still counted so a tool calling it directly is not missed.
+        py_dumps = src.count("report.emit_dump(") + src.count("report.write_dump(")
         sh_dumps = len(re.findall(r"^\s*dump_write\s", src, re.MULTILINE))
         assert py_dumps or sh_dumps, f"{name} is in TOOL_JSON but writes no dump"
         for key in ("tool", "assessment_code"):
@@ -223,6 +225,6 @@ def test_bash_dumping_tools_accept_the_capture_spelling() -> None:
     tool that skips take_dump_opt would reject its own capture arguments."""
     for name in json_tools():
         src = (ROOT / "bin" / name).read_text()
-        if "report.write_dump(" in src:
+        if "report.emit_dump(" in src or "report.write_dump(" in src:
             continue
         assert "take_dump_opt" in src, f"{name} does not accept --dump"

@@ -148,3 +148,34 @@ def test_write_dump_round_trips_the_payload(tmp_path) -> None:
 def test_write_dump_accepts_a_string_path(tmp_path) -> None:
     path = report.write_dump(str(tmp_path / "d.json"), {"tool": "x"})
     assert path.is_file()
+
+
+def test_emit_dump_writes_and_announces_the_path(tmp_path, capsys) -> None:
+    target = tmp_path / "nested" / "run.json"
+    report.emit_dump(target, {"tool": "t", "assessment_code": 0})
+    out = capsys.readouterr().out
+    assert target.is_file()
+    assert f"dump: {target}" in out
+    assert json.loads(target.read_text())["tool"] == "t"
+
+
+def test_emit_dump_warns_instead_of_raising(tmp_path, capsys) -> None:
+    """An unwritable path used to raise through main(), replacing the report's
+    closing line with a traceback and turning the exit status into 1 — which
+    discarded the assessment the run had already reached."""
+    blocked = tmp_path / "file"
+    blocked.write_text("not a directory")
+    report.emit_dump(blocked / "under-a-file.json", {"tool": "t"})
+    captured = capsys.readouterr()
+    assert "could not write dump" in captured.err
+    assert "dump:" not in captured.out
+    assert "Traceback" not in captured.err
+
+
+def test_emit_dump_failure_leaves_the_caller_running(tmp_path, capsys) -> None:
+    """The report has to close after a failed dump, not before it."""
+    blocked = tmp_path / "f"
+    blocked.write_text("x")
+    report.emit_dump(blocked / "x.json", {"tool": "t"})
+    report.finished()
+    assert "finished:" in capsys.readouterr().out
