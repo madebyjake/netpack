@@ -390,3 +390,38 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$(printf '%s' "$output" | cut -f2 | tr '\n' ' ')" = "1 36 6G:1 " ]
 }
+
+# segscan asked lldpcli for `show neighbors summary`, but lldpd's brief view
+# returns after SysName (src/client/display.c), so MgmtIP was never printed and
+# the filter could not match it — the address you need to reach the switch was
+# the one field missing. details carries it, and the filter keeps the output as
+# short as the summary was.
+
+@test "lldp_fields keeps the switch, the port, and the address to reach it" {
+  run lldp_fields "${FIXTURES}/lldp_details.txt"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SysName:      core-sw-01"* ]]
+  [[ "$output" == *"MgmtIP:       10.0.0.2"* ]]
+  [[ "$output" == *"PortID:       ifname GigabitEthernet1/0/12"* ]]
+  [[ "$output" == *"PortDescr:    Uplink to AV rack"* ]]
+  [[ "$output" == *"Interface:    eth0"* ]]
+}
+
+@test "lldp_fields drops the detail lines that would bury those" {
+  run lldp_fields "${FIXTURES}/lldp_details.txt"
+  [[ "$output" != *"SysDescr"* ]]
+  [[ "$output" != *"PMD autoneg"* ]]
+  [[ "$output" != *"TTL:"* ]]
+  [[ "$output" != *"Capability"* ]]
+  # MgmtIface must not ride in on the MgmtIP pattern.
+  [[ "$output" != *"MgmtIface"* ]]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 5 ]
+}
+
+@test "lldp_fields is silent, not failing, when there is no neighbour" {
+  local empty="${BATS_TEST_TMPDIR}/none.txt"
+  printf 'LLDP neighbors:\n' >"$empty"
+  run lldp_fields "$empty"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
