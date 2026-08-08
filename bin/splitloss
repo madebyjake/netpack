@@ -115,7 +115,7 @@ fi
 
 # Per-run filenames so repeat runs into the same -d DIR never clobber evidence.
 # Both legs share one claimed base, so a pair always belongs to the same run.
-RUN_BASE="$(unique_path "${DIR}/$(date +%Y%m%d-%H%M%S)" -gw.log -wan.log)"
+RUN_BASE="$(claim_path "${DIR}/$(date +%Y%m%d-%H%M%S)" -gw.log -wan.log)"
 LOG_GW="${RUN_BASE}-gw.log"
 LOG_WAN="${RUN_BASE}-wan.log"
 

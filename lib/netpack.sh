@@ -380,15 +380,24 @@ no_extra_args() {
   fi
 }
 
-# unique_path BASE EXT... — BASE, or BASE-2, BASE-3 … until none of the given
-# extensions exist on disk. Timestamps are second-resolution because BSD date
-# has no %N, so two runs starting in the same second would otherwise write the
-# same filename and the second would overwrite the first one's evidence.
-unique_path() {
+# claim_path BASE EXT... — claim BASE, or BASE-2, BASE-3 …, and print what was
+# claimed. Timestamps are second-resolution because BSD date has no %N, so two
+# runs starting in the same second would otherwise write the same filenames and
+# the second would overwrite the first one's evidence.
+#
+# The first extension is created under `set -o noclobber`, which makes the open
+# O_EXCL. A plain existence test is check-then-use: parallel runs all look, all
+# find the name free, and all take it. Creating it is what actually reserves it.
+# The remaining extensions are only tested, since the tool writes those itself.
+#
+# Bounded: on an unwritable directory every create fails, and an unbounded loop
+# would spin instead of letting the caller report the error.
+claim_path() {
   local base=$1
   shift
+  local first=$1
   local candidate=$base n=2 ext taken
-  while :; do
+  while (( n <= 100 )); do
     taken=0
     for ext in "$@"; do
       if [[ -e "${candidate}${ext}" ]]; then
@@ -396,10 +405,14 @@ unique_path() {
         break
       fi
     done
-    (( taken )) || break
+    if (( ! taken )) && ( set -o noclobber; : > "${candidate}${first}" ) 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
     candidate="${base}-${n}"
     n=$((n + 1))
   done
+  # Give the caller a usable path; its own write will surface the real error.
   printf '%s\n' "$candidate"
 }
 
