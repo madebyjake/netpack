@@ -585,8 +585,16 @@ capture_run() {
   # Claimed against .log and .json together so a run keeps a matching pair.
   # Inline rather than lib/netpack.sh's unique_path: the launcher does not
   # source that file.
+  # The .log is created under noclobber, which makes the open O_EXCL and so
+  # actually reserves the name. A plain existence test is check-then-use:
+  # parallel runs all look, all find it free, and all write the same file.
+  # Bounded so an unwritable directory reports rather than spins.
   local base="${CAPTURE_DIR}/${name}-${stamp}" n=2
-  while [[ -e "${base}.log" || -e "${base}.json" ]]; do
+  while (( n <= 100 )); do
+    if [[ ! -e "${base}.json" ]] &&
+       ( set -o noclobber; : > "${base}.log" ) 2>/dev/null; then
+      break
+    fi
     base="${CAPTURE_DIR}/${name}-${stamp}-${n}"
     n=$((n + 1))
   done

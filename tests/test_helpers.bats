@@ -642,15 +642,28 @@ in_locale() {
   [[ "$output" != *"not a number"* ]]
 }
 
-@test "unique_path suffixes a base already taken by any of its extensions" {
+@test "claim_path suffixes a base already taken by any of its extensions" {
   local d="${BATS_TEST_TMPDIR}"
-  run unique_path "${d}/run" .log .json
+  run claim_path "${d}/run" .log .json
   [ "$output" = "${d}/run" ]
-  : > "${d}/run.log"
-  run unique_path "${d}/run" .log .json
+  # Claiming creates the first extension, so the next call must move past it.
+  [ -f "${d}/run.log" ]
+  run claim_path "${d}/run" .log .json
   [ "$output" = "${d}/run-2" ]
   # Claimed as a pair: a taken .json moves the base even when .log is free.
-  : > "${d}/run-2.json"
-  run unique_path "${d}/run" .log .json
-  [ "$output" = "${d}/run-3" ]
+  : > "${d}/run-3.json"
+  run claim_path "${d}/run" .log .json
+  [ "$output" = "${d}/run-4" ]
+}
+
+@test "claim_path gives each racing caller its own path" {
+  local d="${BATS_TEST_TMPDIR}/race"
+  mkdir -p "$d"
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    claim_path "${d}/run" .log .json >>"${d}/claimed" &
+  done
+  wait
+  # Eight racing claims, eight distinct paths.
+  [ "$(sort -u "${d}/claimed" | wc -l | tr -d ' ')" -eq 8 ]
 }
