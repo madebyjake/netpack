@@ -3,9 +3,16 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+
+# Evidence artefacts. Tools write reports, JSON dumps and captures wherever the
+# operator points them, which is often the working directory during
+# development. None of it belongs in the repository.
 *.pcap
+*.log
+*.json
 .DS_Store
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .claude/
 CLAUDE.md
