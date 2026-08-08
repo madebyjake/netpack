@@ -72,7 +72,7 @@ def _run_and_terminate(driver: str, stub_dir: Path) -> None:
         text=True,
     )
     try:
-        assert proc.stdout is not None
+        assert proc.stdout is not None and proc.stderr is not None
         ready = False
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
