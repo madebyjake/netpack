@@ -98,7 +98,7 @@ smoke:
 
 # Symlinks rather than copies, so `git pull` updates an installed netpack.
 # Only the two launcher names are linked: the tools resolve through it, and
-# putting seventeen more names on PATH is not a favour to the user.
+# putting every tool name on PATH is not a favour to the user.
 install:
 	@mkdir -p $(BINDIR)
 	@ln -sf $(REPO)/bin/netpack $(BINDIR)/netpack

@@ -40,16 +40,16 @@ an engagement:
 
 ```bash
 # Clone at a release
-git clone --branch 0.7.0 https://github.com/madebyjake/netpack.git ~/netpack
+git clone --branch 0.8.0 https://github.com/madebyjake/netpack.git ~/netpack
 
 # Or move an existing clone onto one
 git -C ~/netpack fetch --tags
-git -C ~/netpack checkout 0.7.0
+git -C ~/netpack checkout 0.8.0
 
 npk --version          # confirm what is installed
 ```
 
-Tags are the bare version (`0.7.0`) and match the GitHub release named
+Tags are the bare version (`0.8.0`) and match the GitHub release named
 `netpack-vX.Y.Z-beta`. Because `make install` symlinks rather than copies,
 checking out a different tag switches the installed tools immediately — there is
 nothing to re-install.
@@ -65,8 +65,8 @@ Every release is marked pre-release until 1.0.0, which means GitHub's
 For a machine without git, a release tarball carries the same tree:
 
 ```bash
-curl -fsSL https://github.com/madebyjake/netpack/archive/refs/tags/0.7.0.tar.gz \
-  | tar -xz -C ~ && mv ~/netpack-0.7.0 ~/netpack
+curl -fsSL https://github.com/madebyjake/netpack/archive/refs/tags/0.8.0.tar.gz \
+  | tar -xz -C ~ && mv ~/netpack-0.8.0 ~/netpack
 ```
 
 Developing or running the test suite? See [CONTRIBUTING.md](CONTRIBUTING.md).
