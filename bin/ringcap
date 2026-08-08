@@ -90,8 +90,7 @@ cd "$ABS_DIR"
 # Not exec: the run has to come back here to close the report, so the evidence
 # carries its own end time like every other tool. Ctrl-C reaches tcpdump
 # through the process group; bash defers this trap until it exits.
-INTERRUPTED=0
-trap 'INTERRUPTED=1' INT
+catch_int
 RC=0
 # Stay root after opening the device so -C rotation can create files in this
 # root-owned 0700 directory (Debian/Ubuntu tcpdump otherwise drops to tcpdump).
@@ -100,10 +99,10 @@ if [[ -n "$FILT" ]]; then
 else
   tcpdump -Z root -i "$IFACE" -s "$SNAPLEN" -C "$MB" -W "$N" -w "cap.pcap" || RC=$?
 fi
-trap - INT
+release_int
 
 # tcpdump killed by SIGINT reports 128+2; Ctrl-C is the normal stop here.
-if (( INTERRUPTED )) || (( RC == 130 )); then
+if interrupted || (( RC == 130 )); then
   RC=0
 fi
 

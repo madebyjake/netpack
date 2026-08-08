@@ -115,11 +115,13 @@ header testsrv
 echo "iperf3 listening on port ${PORT} (Ctrl-C to stop)"
 # Ctrl-C is the normal stop for a server; the report still has to close so the
 # evidence carries its own end time.
-INTERRUPTED=0
-trap 'INTERRUPTED=1' INT
+# catch_int replaces close_port as the INT handler, as the local trap it
+# supersedes did. Cleanup still runs: close_port stays on EXIT, which fires
+# either way, and NFT_OPENED makes it idempotent.
+catch_int
 RC=0
 iperf3 -s -p "$PORT" || RC=$?
-if (( INTERRUPTED )) || (( RC == 130 )); then
+if interrupted || (( RC == 130 )); then
   RC=0
 fi
 
