@@ -95,16 +95,27 @@ probe_port() {
   local host=$1 port=$2
   local err rc=0 t0 t1 ms=""
   t0="${EPOCHREALTIME:-}"
+  # --foreground: without it timeout puts the connect in its own process group,
+  # where Ctrl-C cannot reach it. The shell then waits out the full -t before
+  # its own trap runs, so the tool looks unresponsive for that long and the
+  # probe is recorded as a timeout it never really hit.
   # LC_ALL=C: the case below classifies bash's English error strings, which a
   # localized bash would otherwise translate into the generic FAIL bucket.
   # $0/$1 belong to the inner bash -c, not this shell
   # shellcheck disable=SC2016
-  err="$(LC_ALL=C timeout "$TIMEOUT" bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "$port" 2>&1)" || rc=$?
+  err="$(LC_ALL=C timeout --foreground "$TIMEOUT" bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "$port" 2>&1)" || rc=$?
   t1="${EPOCHREALTIME:-}"
   if [[ -n "$t0" && -n "$t1" ]]; then
     ms="$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.0fms", (b - a) * 1000 }')"
   fi
 
+  # 128+signal: Ctrl-C killed the connect, so there is no result. Returning 2
+  # keeps it out of both counters — an unmeasured port is not a closed one.
+  if (( rc >= 128 )); then
+    printf '  port %-5s  %s\n' "$port" \
+      "$(color_status warn "not probed (interrupted mid-connect)")"
+    return 2
+  fi
   if (( rc == 0 )); then
     printf '  port %-5s  %s  %s\n' "$port" "$(color_status ok "OPEN   ")" "$ms"
     dump_row ports "n:port=${port}" "s:state=open" "n:connect_ms=${ms%ms}"
@@ -158,18 +169,13 @@ for p in "${PORTS[@]}"; do
     # port the tool never reached into the evidence.
     continue
   fi
-  prev_failed=$FAILED
-  probe_port "$HOST" "$p"
-  # Ctrl-C kills the connect in flight, so the line just printed reports the
-  # signal, not the network. Discard the count: a cut-short probe is not a
-  # filtered port.
-  if interrupted; then
-    FAILED=$prev_failed
-    printf '  %s\n' \
-      "$(color_status warn "^ that probe was cut short by the interrupt; result discarded")"
-    continue
+  # probe_port returns 2 when Ctrl-C killed the connect: no result either way,
+  # so it counts as neither probed nor failed.
+  probe_rc=0
+  probe_port "$HOST" "$p" || probe_rc=$?
+  if (( probe_rc == 0 )); then
+    TESTED=$((TESTED + 1))
   fi
-  TESTED=$((TESTED + 1))
 done
 release_int
 
