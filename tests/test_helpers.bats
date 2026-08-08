@@ -593,3 +593,40 @@ wt0	100.100.9.10/24" ]
   # The report still has to close: the exit status changes, the evidence does not.
   [[ "$output" == *"finished:"* ]]
 }
+
+# --- locale ------------------------------------------------------------------
+#
+# awk and printf format decimals per LC_NUMERIC. Under a comma-decimal locale a
+# loss of 1.5% became "1,5", which classify_loss_set read as 1 and reported as
+# clean, and which dump_num rejected as not a number.
+
+@test "sourcing netpack.sh pins LC_ALL to C" {
+  run env LC_ALL=de_DE.UTF-8 bash -c "source '${REPO}/lib/netpack.sh'; printf '%s' \"\$LC_ALL\""
+  [ "$output" = "C" ]
+}
+
+@test "decimal formatting stays dot-separated under a comma-decimal locale" {
+  run env LC_ALL=de_DE.UTF-8 bash -c \
+    "source '${REPO}/lib/netpack.sh'; awk 'BEGIN { printf \"%.1f\", 1.5 }'"
+  [ "$output" = "1.5" ]
+}
+
+@test "loss above the threshold is not classified as clean under that locale" {
+  run env LC_ALL=de_DE.UTF-8 bash -c "
+    source '${REPO}/lib/netpack/parsers.sh'
+    source '${REPO}/lib/netpack.sh'
+    loss=\"\$(awk -v f=3 -v c=200 'BEGIN { printf \"%.1f\", f * 100 / c }')\"
+    classify_loss_set 1 \"\$loss\""
+  # 3 lost of 200 is 1.5%, over the 1% threshold.
+  [ "$output" = "all" ]
+}
+
+@test "a locale-formatted decimal still serializes as a JSON number" {
+  run env LC_ALL=de_DE.UTF-8 bash -c "
+    source '${REPO}/lib/netpack.sh'
+    dump_begin
+    dump_num loss_pct \"\$(awk 'BEGIN { printf \"%.1f\", 1.5 }')\"
+    dump_write '${BATS_TEST_TMPDIR:-/tmp}/locale.json' locmt 0"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"not a number"* ]]
+}
