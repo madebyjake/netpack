@@ -271,10 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         src_ip = _outbound_ip()
         iface_label = "(default route)"
     ssdp, ssdp_err, interrupted = ssdp_search(args.timeout, src_ip)
-    # Ctrl-C during the SSDP window ends the run rather than falling through to
-    # the mDNS one: the operator asked the tool to stop, and opening a second
-    # window would make that keypress look ignored. An unsearched mDNS window is
-    # then reported as unsearched, never as "none found".
+    # Ctrl-C during SSDP ends the run rather than opening the mDNS window,
+    # which would make the keypress look ignored. That window is then reported
+    # as unsearched, never as "none found".
     mdns: dict[str, set[str]] = {}
     mdns_err = ""
     mdns_searched = False

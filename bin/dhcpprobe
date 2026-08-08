@@ -370,12 +370,10 @@ def collect_offers(
             print(f"sending DHCPDISCOVER on {iface} xid=0x{xid:08x}", file=sys.stderr)
         sendp(pkt, iface=iface, verbose=0)
 
-    # scapy's sniff() catches KeyboardInterrupt itself and returns the packets
-    # captured so far — it re-raises only under chainCC, which discards them. So
-    # the offers already survive Ctrl-C, but the interrupt is invisible to the
-    # caller, and a window cut short after one second would otherwise be
-    # reported as a full listen. This handler records that it happened while
-    # still raising, so sniff unwinds normally and hands back its batch.
+    # scapy's sniff() catches KeyboardInterrupt and returns what it captured
+    # (it re-raises only under chainCC, which discards them), so offers already
+    # survive but the interrupt is invisible. This records it while still
+    # raising, so sniff unwinds and hands back its batch.
     interrupted = False
 
     def on_sigint(_signum: int, _frame: Any) -> None:

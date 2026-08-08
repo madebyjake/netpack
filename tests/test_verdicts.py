@@ -1,10 +1,7 @@
 """Verdict selection, including the branches an interrupted run reaches.
 
-These decisions used to live inline in bin/, where exercising them needed real
-hardware — so the interrupted paths, added precisely because they are easy to
-get wrong, had no coverage. The assertions below are as much about wording as
-about exit codes: a cut-short run that reads like a clean one is the failure
-mode these branches exist to prevent.
+Assertions cover wording as well as exit codes: a cut-short run reading like a
+clean one is the failure these branches prevent.
 """
 
 from __future__ import annotations
@@ -36,8 +33,7 @@ def test_flaps_outrank_drops_on_wired_links() -> None:
 
 
 def test_wireless_flaps_are_not_a_flap_fault() -> None:
-    """Wi-Fi carrier changes move on roam and reassoc, so they must not raise
-    the flap verdict the way a wired link's do."""
+    """Wi-Fi carrier changes move on roam and reassoc; a wired link's do not."""
     v = verdicts.link_counters(errors=0, drops=0, flaps=6, wireless=True, window_s=30)
     assert v.code == verdicts.EXIT_OK
     v_wired = verdicts.link_counters(
@@ -59,9 +55,8 @@ def test_clean_window_reads_clean() -> None:
 
 
 def test_interrupted_clean_window_does_not_claim_the_link_is_healthy() -> None:
-    """The branch that matters: a 2s sample that saw nothing must not read the
-    same as a completed one, or an operator banks a clean result they did not
-    get."""
+    """A 2s sample that saw nothing must not read the same as a completed
+    one."""
     v = verdicts.link_counters(
         errors=0, drops=0, flaps=0, wireless=False, window_s=2.0, interrupted=True
     )
@@ -73,8 +68,7 @@ def test_interrupted_clean_window_does_not_claim_the_link_is_healthy() -> None:
 
 
 def test_interrupted_run_still_reports_a_fault_it_saw() -> None:
-    """Counters that grew are evidence regardless of when the window ended, so
-    interruption must not soften a real finding."""
+    """Counters that grew are evidence whenever the window ended."""
     v = verdicts.link_counters(
         errors=9, drops=0, flaps=0, wireless=False, window_s=3.0, interrupted=True
     )
@@ -115,8 +109,8 @@ def test_interrupted_silence_concludes_nothing() -> None:
 
 
 def test_offer_without_ack_outranks_interruption() -> None:
-    """The server answered and then refused: that was observed, not merely
-    not-yet-contradicted, so it stands over the cut-short wording."""
+    """Observed, not merely not-yet-contradicted, so it stands over the
+    cut-short wording."""
     v = verdicts.dhcp_offers(1, dora_state="timeout", interrupted=True)
     assert v.code == verdicts.EXIT_NOACK
     assert "did not ACK" in v.message
@@ -131,8 +125,7 @@ def test_dora_ack_is_still_clean() -> None:
 
 
 def test_hosts_seen_on_both_protocols_count_once() -> None:
-    """host_count is the union, not the sum: one device answering SSDP and mDNS
-    is one host on the segment."""
+    """host_count is the union, not the sum."""
     v = verdicts.discovery(host_count=1, ssdp_count=1, mdns_count=1)
     assert v.message.startswith("1 host(s)")
     assert "SSDP 1, mDNS 1" in v.message
@@ -150,8 +143,8 @@ def test_interrupted_silence_is_not_a_quiet_segment() -> None:
 
 
 def test_unsearched_mdns_is_named_in_the_scope() -> None:
-    """Reporting "mDNS 0" for a window that never opened would claim a search
-    that did not happen."""
+    """"mDNS 0" for a window that never opened would claim a search that did
+    not happen."""
     v = verdicts.discovery(
         host_count=2, ssdp_count=2, mdns_count=0, mdns_searched=False, interrupted=True
     )
@@ -169,8 +162,8 @@ def test_interrupted_inventory_is_not_exhaustive() -> None:
 
 
 def test_discovery_never_returns_a_condition_code() -> None:
-    """Finding nothing is a valid result for discover, unlike dhcpprobe where
-    silence is exit 2. Every path here stays 0."""
+    """Finding nothing is valid for discover, unlike dhcpprobe where silence is
+    exit 2."""
     every_path = [
         verdicts.discovery(0, 0, 0),
         verdicts.discovery(0, 0, 0, interrupted=True),

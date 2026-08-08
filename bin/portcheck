@@ -161,10 +161,8 @@ for p in "${PORTS[@]}"; do
   prev_failed=$FAILED
   probe_port "$HOST" "$p"
   # Ctrl-C kills the connect in flight, so the line just printed reports the
-  # signal rather than the network. Discard the count: a probe cut short is not
-  # a filtered port, and letting it stand would name filtering that was never
-  # observed. The dump carries interrupted=true so a consumer knows the payload
-  # stops short here.
+  # signal, not the network. Discard the count: a cut-short probe is not a
+  # filtered port.
   if interrupted; then
     FAILED=$prev_failed
     printf '  %s\n' \
