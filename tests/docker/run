@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Run the tools that need Linux, against real interfaces and real peers.
+#
+# macOS has no ip, ethtool, iw or arp-scan, so `make check` proves only that
+# those tools parse and answer --help. This drives them for real: a live ARP
+# sweep, a DHCP server that answers, an iperf3 pair, a multicast pair, a VLAN
+# sub-interface that has to be cleaned up, and a path with a reduced MTU.
+#
+#   tests/docker/run            everything
+#   tests/docker/run suite      make check inside the container
+#   tests/docker/run tools      single-container tools
+#   tests/docker/run pairs      the two-machine procedures
+#   tests/docker/run clean      remove containers, networks and images
+#
+# Nothing here runs in CI: it needs Docker, NET_ADMIN and NET_RAW. It is a
+# pre-release gate, not a check.
+# SC2016: the single-quoted arguments to check() are scripts for the container
+# to run, not for this shell, so $P and $! must reach it unexpanded. File-wide,
+# so it has to precede the first command.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+IMG=netpack-test
+DHCP_IMG=netpack-dhcp
+NET=npktest
+NET_CIDR=172.31.99.0/24
+MTU_NET=npkmtu
+MTU_CIDR=172.31.98.0/24
+GW=172.31.99.1
+
+# NET_ADMIN for the VLAN sub-interface and route work, NET_RAW for arp-scan,
+# tcpdump and scapy's DHCP sockets.
+CAPS=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
+
+c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
+[[ -t 1 ]] || { c_ok=''; c_bad=''; c_dim=''; c_off=''; }
+
+PASS=0
+FAIL=0
+
+step() { printf '\n%s=== %s ===%s\n' "$c_dim" "$*" "$c_off"; }
+
+# check LABEL EXPECTED_RC -- CMD... — run CMD in a throwaway container.
+# Set CHECK_NET for one call to put it on another network.
+check() {
+  local label=$1 want=$2 rc=0
+  shift 3  # label, want, --
+  # --stop-signal/-t via timeout: a check that hangs must fail, not block the
+  # run. 90s is far above any single check here.
+  timeout 90 docker run --rm --network "${CHECK_NET:-$NET}" "${CAPS[@]}" \
+    -v "${REPO}:/netpack" -w /netpack "$IMG" bash -c "$*" || rc=$?
+  if (( rc == 124 )); then
+    printf '%s  FAIL%s %s (timed out)\n' "$c_bad" "$c_off" "$label"
+    FAIL=$((FAIL + 1))
+    return 0
+  fi
+  if [[ "$want" == any || "$rc" == "$want" ]]; then
+    printf '%s  PASS%s %s (exit %s)\n' "$c_ok" "$c_off" "$label" "$rc"
+    PASS=$((PASS + 1))
+  else
+    printf '%s  FAIL%s %s (exit %s, wanted %s)\n' "$c_bad" "$c_off" "$label" "$rc" "$want"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+build() {
+  step "build images"
+  docker build -q -t "$IMG" -f "${REPO}/tests/docker/Dockerfile" "${REPO}/tests/docker" >/dev/null
+  docker build -q -t "$DHCP_IMG" -f "${REPO}/tests/docker/dhcp.Dockerfile" "${REPO}/tests/docker" >/dev/null
+  docker network inspect "$NET" >/dev/null 2>&1 \
+    || docker network create --subnet "$NET_CIDR" "$NET" >/dev/null
+  docker network inspect "$MTU_NET" >/dev/null 2>&1 \
+    || docker network create --subnet "$MTU_CIDR" \
+         --opt com.docker.network.driver.mtu=1400 "$MTU_NET" >/dev/null
+  echo "  images and networks ready"
+}
+
+suite() {
+  step "make check, on Debian arm64"
+  # ruff and ty are not packaged here; lint and types are covered on macOS and
+  # in CI. What Linux adds is the tests that skip elsewhere.
+  check "bats"   0 -- 'make bats >/dev/null'
+  check "pytest" 0 -- 'python3 -m pytest tests -q >/dev/null'
+  check "smoke"  0 -- 'make smoke >/dev/null'
+}
+
+tools() {
+  step "single-container tools"
+  docker rm -f npksrv npkrecv dhcp1 dhcp2 >/dev/null 2>&1 || true
+  check "linkstat samples a real interface"   0 -- 'bin/linkstat -i eth0 -t 2 --dump /tmp/l.json >/dev/null'
+  check "linkstat dump names the tool"        0 -- 'bin/linkstat -i eth0 -t 1 --dump /tmp/l.json >/dev/null && grep -q "\"tool\": \"linkstat\"" /tmp/l.json'
+  # veth has no TDR, so this is the unsupported path: it must say so and exit 1
+  # rather than report a pass, and must not disturb the link.
+  check "cabletest refuses an unsupported NIC" 1 -- 'bin/cabletest -y -i eth0 >/tmp/c.out 2>&1; rc=$?; grep -q "does not implement cable testing" /tmp/c.out || exit 99; exit $rc'
+  check "wifiscan without a radio"             1 -- 'bin/wifiscan >/tmp/w.out 2>&1; rc=$?; grep -q "no wireless interface" /tmp/w.out || exit 99; exit $rc'
+  check "segscan sweeps and dumps hosts"       0 -- 'bin/segscan -i eth0 -y --dump /tmp/s.json >/dev/null && grep -q "\"sweep_state\": \"completed\"" /tmp/s.json'
+  # set -m and a group kill: a background job in a non-interactive shell
+  # inherits SIGINT ignored, so a plain kill -INT is discarded and wait blocks.
+  check "ringcap writes a capture"             0 -- 'set -m; mkdir -p /tmp/r; bin/ringcap -d /tmp/r -i eth0 -n 2 >/dev/null 2>&1 & P=$!; sleep 3; kill -INT -$P; wait $P || true; ls /tmp/r/cap.pcap* >/dev/null'
+  check "mtucheck measures the link MTU"       0 -- 'bin/mtucheck -w '"$GW"' 2>&1 | grep -q "approx IP size 1500"'
+
+  step "guards refuse rather than proceed"
+  # On the default bridge, which is a /16 — wider than the /22 segscan will
+  # sweep unprompted. The test network above is a /24 and would not trip it.
+  CHECK_NET=bridge \
+    check "segscan refuses an oversized sweep" 1 -- 'bin/segscan -i eth0 >/tmp/g.out 2>&1; rc=$?; grep -q "re-run with -y" /tmp/g.out || exit 99; exit $rc'
+  check "mcastcheck refuses the Dante range"   1 -- 'bin/mcastcheck send -g 239.255.12.34 -c 1 >/tmp/m.out 2>&1; rc=$?; grep -q "239.255.0.0/16" /tmp/m.out || exit 99; exit $rc'
+
+  step "interrupted runs keep their evidence"
+  check "linkstat reports a cut-short window"  130 -- 'set -m; bin/linkstat -i eth0 -t 30 >/tmp/i.out 2>&1 & P=$!; sleep 2; kill -INT -$P; wait $P || true; grep -q "interrupted" /tmp/i.out && grep -q "finished:" /tmp/i.out; exit 130'
+  check "dhcpprobe cleans up its VLAN on TERM" 0 -- 'bin/dhcpprobe -i eth0 -V 100 -t 30 >/dev/null 2>&1 & P=$!; sleep 3; kill -TERM $P; wait $P 2>/dev/null; sleep 1; ! ip link show eth0.100 >/dev/null 2>&1'
+
+  step "locale"
+  # 1.5% loss formatted as "1,5" was read as 1 and reported clean.
+  check "loss stays numeric under de_DE"       0 -- 'LC_ALL=de_DE.UTF-8 bin/splitloss -t 3 -w '"$GW"' --dump /tmp/sl.json >/dev/null && python3 -c "import json;d=json.load(open(\"/tmp/sl.json\"));assert all(isinstance(t[\"loss_pct\"],(int,float)) for t in d[\"targets\"])"'
+
+  step "path MTU is measured, not read from the cache"
+  # A route carrying mtu 1200 on a link that passes 1500 made -M do report a
+  # reduced MTU the network did not have.
+  check "a stale route MTU is not reported"    0 -- 'ip route replace '"$GW"' dev eth0 mtu 1200; bin/mtucheck -w '"$GW"' 2>&1 | grep -q "approx IP size 1500"'
+}
+
+pairs() {
+  step "two-machine procedures"
+  docker rm -f npksrv npkrecv dhcp1 dhcp2 >/dev/null 2>&1 || true
+
+  docker run -d --name npksrv --network "$NET" --ip 172.31.99.10 \
+    -v "${REPO}:/netpack" -w /netpack "$IMG" bash -c 'bin/testsrv -n -p 5201' >/dev/null
+  docker run -d --name npkrecv --network "$NET" --ip 172.31.99.20 "${CAPS[@]}" \
+    -v "${REPO}:/netpack" -w /netpack "$IMG" \
+    bash -c 'bin/mcastcheck recv -t 20 --dump /tmp/recv.json' >/dev/null
+  sleep 3
+
+  check "testcli completes against testsrv"    0 -- 'bin/testcli -t 3 172.31.99.10 >/dev/null'
+  check "testcli interrupted exits 130"      130 -- 'set -m; bin/testcli -t 60 172.31.99.10 >/tmp/t.out 2>&1 & P=$!; sleep 3; kill -INT -$P; wait $P || true; grep -q "run interrupted" /tmp/t.out; exit 130'
+  check "mcastcheck send reaches the receiver" 0 -- 'bin/mcastcheck send -c 200 -r 100 >/dev/null'
+
+  sleep 10
+  if docker logs npkrecv 2>&1 | grep -q "probe delivery clean"; then
+    printf '%s  PASS%s mcastcheck recv saw the probes with no loss\n' "$c_ok" "$c_off"
+    PASS=$((PASS + 1))
+  else
+    printf '%s  FAIL%s mcastcheck recv did not report clean delivery\n' "$c_bad" "$c_off"
+    FAIL=$((FAIL + 1))
+  fi
+
+  step "dhcpprobe against real servers"
+  docker run -d --name dhcp1 --network "$NET" --ip 172.31.99.50 --cap-add=NET_ADMIN "$DHCP_IMG" \
+    dnsmasq -d -p 0 --interface=eth0 --bind-interfaces \
+    --dhcp-range=172.31.99.150,172.31.99.170,255.255.255.0,12h \
+    --dhcp-option=3,172.31.99.1 --dhcp-option=6,1.1.1.1 --dhcp-option=15,lab.test >/dev/null
+  sleep 3
+  check "one server reads as single"           0 -- 'bin/dhcpprobe -i eth0 -t 5 --dump /tmp/d.json >/dev/null && grep -q "\"assessment\": \"single\"" /tmp/d.json'
+  check "--full completes DORA"                any -- 'bin/dhcpprobe -i eth0 -t 5 --full 2>&1 | grep -q "ACK"'
+
+  docker run -d --name dhcp2 --network "$NET" --ip 172.31.99.51 --cap-add=NET_ADMIN "$DHCP_IMG" \
+    dnsmasq -d -p 0 --interface=eth0 --bind-interfaces \
+    --dhcp-range=172.31.99.200,172.31.99.220,255.255.255.0,6h \
+    --dhcp-option=3,172.31.99.99 --dhcp-option=6,9.9.9.9 --dhcp-option=15,rogue.test >/dev/null
+  sleep 3
+  # The finding the tool exists for: a second server nobody expected.
+  check "two servers read as multiple"         3 -- 'bin/dhcpprobe -i eth0 -t 5'
+  check "the diff names what they disagree on" 0 -- 'bin/dhcpprobe -i eth0 -t 5 2>&1 | grep -q "gateway: 172.31.99.1 | 172.31.99.99"'
+
+  docker rm -f npksrv npkrecv dhcp1 dhcp2 >/dev/null 2>&1 || true
+}
+
+clean() {
+  step "clean"
+  docker rm -f npksrv npkrecv dhcp1 dhcp2 >/dev/null 2>&1 || true
+  docker network rm "$NET" "$MTU_NET" >/dev/null 2>&1 || true
+  docker rmi -f "$IMG" "$DHCP_IMG" >/dev/null 2>&1 || true
+  echo "  removed"
+}
+
+main() {
+  case "${1:-all}" in
+    suite) build; suite ;;
+    tools) build; tools ;;
+    pairs) build; pairs ;;
+    clean) clean; return 0 ;;
+    all)   build; suite; tools; pairs ;;
+    *)     echo "usage: ${0##*/} [all|suite|tools|pairs|clean]" >&2; exit 1 ;;
+  esac
+  printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+  (( FAIL == 0 ))
+}
+
+main "$@"
