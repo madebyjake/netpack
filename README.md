@@ -245,6 +245,23 @@ sweep; the UDP/TCP modes); `testsrv` needs root only to touch the nftables sets.
 | 2+ | Condition found (tool-specific; see `--help`) |
 | 130 | Interrupted (except tools where Ctrl-C is the normal stop: `ringcap`, `splitloss`, `mcastcheck recv`) |
 
+Ctrl-C is a normal way to end a field test, so a tool prints its report and
+writes `--dump` anyway rather than discarding the run. Three rules hold across
+every tool:
+
+- Measurements are scaled to what was actually attempted, never to what was
+  requested — loss is counted against the probes sent, not the count asked for.
+- A target the run never reached is reported as not probed, never as clean. An
+  unqueried resolver, an unswept address, and an untried port are absent from
+  the evidence rather than present as passing.
+- A probe cut off mid-flight is discarded, not recorded. Killing `curl` or `dig`
+  looks exactly like a block, and a portal or a filtered port that was never
+  observed must not appear in the report.
+
+An interrupted assessment therefore leans against false confidence: a short
+window that saw no fault has not shown the segment is clean, only that it did
+not look for long enough.
+
 ## Production notes
 
 - All tools are IPv4-only (DHCP, ARP, MTU header math, default targets). Dual-stack faults on the v6 side are out of scope.

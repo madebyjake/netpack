@@ -533,3 +533,63 @@ wt0	100.100.9.10/24" ]
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# --- interruption -------------------------------------------------------------
+#
+# catch_int keeps a tool alive through Ctrl-C so it can still print its report.
+# A signal cannot be delivered realistically inside bats, so these drive the
+# flag the trap sets; the trap wiring itself is asserted separately.
+
+@test "interrupted is false until the flag is set" {
+  catch_int
+  run interrupted
+  [ "$status" -ne 0 ]
+}
+
+@test "a real SIGINT sets the flag instead of killing the tool" {
+  # Delivered for real rather than simulated: the whole point of the helper is
+  # that the shell survives the signal, which only an actual SIGINT proves.
+  run bash -c "
+    source '${REPO}/lib/netpack.sh'
+    catch_int
+    kill -INT \$\$
+    interrupted && echo CAUGHT
+    echo STILL_RUNNING
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CAUGHT"* ]]
+  [[ "$output" == *"STILL_RUNNING"* ]]
+}
+
+@test "catch_int clears a flag left set by an earlier run" {
+  NP_INTERRUPTED=1
+  catch_int
+  run interrupted
+  [ "$status" -ne 0 ]
+}
+
+@test "release_int restores default SIGINT handling" {
+  run bash -c "
+    source '${REPO}/lib/netpack.sh'
+    catch_int
+    release_int
+    kill -INT \$\$
+    echo SHOULD_NOT_REACH
+  "
+  [ "$status" -eq 130 ]
+  [[ "$output" != *"SHOULD_NOT_REACH"* ]]
+}
+
+@test "finish_with returns its argument on a completed run" {
+  catch_int
+  run bash -c "source '${REPO}/lib/netpack.sh'; catch_int; finish_with 3"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"finished:"* ]]
+}
+
+@test "finish_with downgrades to 130 once interrupted, and still closes the report" {
+  run bash -c "source '${REPO}/lib/netpack.sh'; catch_int; NP_INTERRUPTED=1; finish_with 2"
+  [ "$status" -eq 130 ]
+  # The report still has to close: the exit status changes, the evidence does not.
+  [[ "$output" == *"finished:"* ]]
+}

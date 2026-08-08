@@ -39,6 +39,11 @@ Exit codes:
   0  gateway and WAN support a full-size path near MAX
   1  usage, dependency, or probe error; or the WAN leg was untestable via -i
   2  reduced MTU detected on gateway or WAN path
+  130  interrupted; sizes reported are a lower bound
+
+Ctrl-C stops the search and still reports. An unconverged binary search proves
+only that the sizes shown passed, so the figure is a floor and never a reduced
+MTU: sizes above it were not probed, not blocked.
 EOF
 }
 
@@ -114,7 +119,10 @@ largest_ok() {
     return 1
   fi
   best=$lo
-  while (( lo <= hi )); do
+  # An interrupted search has not converged, but every size in `best` was proved
+  # to pass, so the figure stands as a lower bound rather than as the answer.
+  # The caller marks it as one; it must never be printed as the path MTU.
+  while (( lo <= hi )) && ! interrupted; do
     mid=$(( (lo + hi) / 2 ))
     if ping_df "$host" "$mid"; then
       best=$mid
@@ -151,11 +159,21 @@ if [[ -z "$IFACE" ]] && command -v tracepath >/dev/null 2>&1; then
 fi
 
 echo "=== DF ping binary search ==="
+catch_int
 gw_payload="$(largest_ok "$GW")" || true
 wan_payload=""
+WAN_UNPROBED=""
 if [[ -z "$WAN_SKIP" ]]; then
-  wan_payload="$(largest_ok "$WAN")" || true
+  # A WAN leg the run never started is unmeasured, not blocked: leaving it at 0
+  # would classify as "DF probes failed" and name a black hole that was never
+  # looked for.
+  if interrupted; then
+    WAN_UNPROBED=1
+  else
+    wan_payload="$(largest_ok "$WAN")" || true
+  fi
 fi
+release_int
 
 gw_total="$(mtu_total "${gw_payload:-0}")"
 wan_total="$(mtu_total "${wan_payload:-0}")"
@@ -173,13 +191,35 @@ color_mtu() {
   fi
 }
 
-printf 'gateway (%s): largest OK payload %s (approx IP size %s)\n' \
-  "$GW" "${gw_payload:-0}" "$(color_mtu "$gw_total")"
+bound=""
+if interrupted; then
+  bound=" — at least this, search did not converge"
+fi
+
+printf 'gateway (%s): largest OK payload %s (approx IP size %s)%s\n' \
+  "$GW" "${gw_payload:-0}" "$(color_mtu "$gw_total")" "$bound"
 if [[ -n "$WAN_SKIP" ]]; then
   printf 'wan     (%s): %s\n' "$WAN" "$(color_status warn "untestable via ${IFACE}")"
+elif [[ -n "$WAN_UNPROBED" ]]; then
+  printf 'wan     (%s): %s\n' "$WAN" "$(color_status warn "not probed — run interrupted")"
 else
-  printf 'wan     (%s): largest OK payload %s (approx IP size %s)\n' \
-    "$WAN" "${wan_payload:-0}" "$(color_mtu "$wan_total")"
+  printf 'wan     (%s): largest OK payload %s (approx IP size %s)%s\n' \
+    "$WAN" "${wan_payload:-0}" "$(color_mtu "$wan_total")" "$bound"
+fi
+
+# An unconverged search proves a floor, never a ceiling: the sizes above `best`
+# were simply never tried, so nothing here can be called a black hole.
+if interrupted; then
+  note "interrupted — sizes above those shown were never probed"
+  if (( gw_total == 0 )); then
+    verdict "interrupted before any DF probe succeeded; no MTU evidence collected." \
+      "Re-run and let the gateway leg complete."
+  else
+    verdict "the gateway path passed DF probes up to approximately ${gw_total} bytes before the run was interrupted." \
+      "This is a lower bound, not the path MTU. Re-run to completion to find where it stops."
+  fi
+  finished
+  exit 130
 fi
 
 # A skipped WAN leg is unmeasured, not 0 (0 would classify as blocked), so the

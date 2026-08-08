@@ -108,10 +108,14 @@ def test_readme_points_at_every_runnable_playbook() -> None:
 
 
 # header/verdict/finished, in either the bash or the Python spelling.
+# finish_with counts as a closer: it calls finished before exiting, downgrading
+# the status to 130 when the run was interrupted.
 _REPORT_CALLS = {
     "header": re.compile(r"^\s*header\s+\S|report\.header\(", re.MULTILINE),
     "verdict": re.compile(r"^\s*verdict\s+\S|report\.verdict\(", re.MULTILINE),
-    "finished": re.compile(r"^\s*finished\s*$|report\.finished\(\)", re.MULTILINE),
+    "finished": re.compile(
+        r"^\s*finished\s*$|^\s*finish_with\s+\S|report\.finished\(\)", re.MULTILINE
+    ),
 }
 
 

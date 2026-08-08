@@ -46,6 +46,10 @@ Exit codes:
   0  all ports connected
   1  usage or dependency error
   2  one or more ports did not connect
+  130  interrupted; only the ports already probed were tested
+
+Ctrl-C stops the run and still reports. Ports not reached are listed as not
+probed rather than counted as closed.
 EOF
 }
 
@@ -142,16 +146,54 @@ echo "host: ${HOST}  ports: ${PORTS[*]}  timeout: ${TIMEOUT}s${VIA:+  via: ${VIA
 multihomed_note "$VIA"
 echo
 echo "=== probes ==="
+TESTED=0
+catch_int
 for p in "${PORTS[@]}"; do
+  # A port never probed is unknown, not filtered. Counting it against the total
+  # would report closed ports the tool never actually tried to reach.
+  if interrupted; then
+    printf '  port %-5s  %s\n' "$p" \
+      "$(color_status warn "not probed (run interrupted)")"
+    # No dump_row: an unprobed port has no state, and inventing one would put a
+    # port the tool never reached into the evidence.
+    continue
+  fi
+  prev_failed=$FAILED
   probe_port "$HOST" "$p"
+  # Ctrl-C kills the connect in flight, so the line just printed reports the
+  # signal rather than the network. Discard the count: a probe cut short is not
+  # a filtered port, and letting it stand would name filtering that was never
+  # observed. The dump carries interrupted=true so a consumer knows the payload
+  # stops short here.
+  if interrupted; then
+    FAILED=$prev_failed
+    printf '  %s\n' \
+      "$(color_status warn "^ that probe was cut short by the interrupt; result discarded")"
+    continue
+  fi
+  TESTED=$((TESTED + 1))
 done
+release_int
 
-if (( FAILED == 0 )); then
+if interrupted; then
+  note "interrupted — ${TESTED} of ${#PORTS[@]} port(s) were probed"
+fi
+
+if (( TESTED == 0 )); then
+  CODE=130
+  verdict "interrupted before any port was probed; no reachability evidence collected." \
+    "Re-run and allow at least one port to complete."
+elif (( FAILED == 0 )); then
   CODE=0
-  verdict "all ${#PORTS[@]} port(s) connected."
+  if interrupted; then
+    verdict "all ${TESTED} port(s) probed connected; the rest were not tried." \
+      "Re-run to completion before treating the service as reachable."
+  else
+    verdict "all ${#PORTS[@]} port(s) connected."
+  fi
 else
   CODE=2
-  verdict "${FAILED} of ${#PORTS[@]} port(s) did not connect." \
+  verdict "${FAILED} of ${TESTED} probed port(s) did not connect." \
     "REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host."
 fi
 
@@ -160,8 +202,9 @@ if [[ -n "$DUMP_PATH" ]]; then
   dump_opt_str via "$VIA"
   dump_num timeout_s "$TIMEOUT"
   dump_num ports_failed "$FAILED"
+  dump_num ports_probed "$TESTED"
   dump_num ports_total "${#PORTS[@]}"
-  dump_write "$DUMP_PATH" portcheck "$CODE" || true
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
+  dump_write "$DUMP_PATH" portcheck "$(interrupted && echo 130 || echo "$CODE")" || true
 fi
-finished
-exit "$CODE"
+finish_with "$CODE"

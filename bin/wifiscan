@@ -29,6 +29,10 @@ Options:
 Exit codes:
   0  scan completed
   1  usage, dependency, permission, or no wireless interface
+  130  interrupted before the scan completed
+
+Ctrl-C during the scan reports the interruption rather than diagnosing a radio
+fault: iw exits non-zero either way, and the two must not read the same.
 EOF
 }
 
@@ -94,7 +98,20 @@ else
 fi
 echo
 
-if ! iw dev "$IFACE" scan >"$SCAN" 2>"${DIR}/err"; then
+catch_int
+SCAN_RC=0
+iw dev "$IFACE" scan >"$SCAN" 2>"${DIR}/err" || SCAN_RC=$?
+release_int
+
+if (( SCAN_RC != 0 )); then
+  # Ctrl-C kills iw too, so it exits non-zero having written nothing. Reporting
+  # that as "radio busy, rfkill, or unsupported" would diagnose a hardware fault
+  # from what was only the operator stopping the run.
+  if interrupted; then
+    verdict "interrupted before the scan completed; no AP survey collected." \
+      "Re-run and allow the scan to finish; it takes a few seconds per band."
+    finish_with 130
+  fi
   cat "${DIR}/err" >&2 || true
   die "scan failed on ${IFACE} (radio busy, rfkill, or unsupported)"
 fi
@@ -160,5 +177,4 @@ else
   verdict "${COUNT} access point(s) visible (none on 2.4 GHz)." \
     "$NEXT"
 fi
-finished
-exit 0
+finish_with 0

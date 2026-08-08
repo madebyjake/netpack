@@ -50,6 +50,11 @@ Exit codes:
   1  usage or dependency error; or -i could not bind an honest probe
   2  all servers >1% loss
   3  divergent results across servers
+  130  interrupted; figures cover the queries actually sent
+
+Ctrl-C stops the run and still reports. Loss is measured against the queries
+sent, not the count requested, and a server the run never reached is listed as
+not queried rather than as clean.
 EOF
 }
 
@@ -103,12 +108,22 @@ echo
 
 declare -a LOSS_PCTS=()
 
+declare -a UNQUERIED=()
+
+catch_int
 for srv in "${SERVERS[@]}"; do
+  # A server the run never reached is unmeasured, not clean: recording it as 0%
+  # loss would put a server that was never asked anything into the evidence as
+  # healthy.
+  if interrupted; then
+    UNQUERIED+=("$srv")
+    continue
+  fi
   ok=0
   fail=0
   rtts=()
   i=0
-  while (( i < COUNT )); do
+  while (( i < COUNT )) && ! interrupted; do
     # dig exits non-zero on a lost/timed-out query — the very event being
     # measured — so guard the pipeline or set -e/pipefail aborts at first loss.
     t="$(dig "${DIG_BIND[@]+"${DIG_BIND[@]}"}" @"$srv" "$NAME" A +time=1 +tries=1 +stats 2>/dev/null \
@@ -124,9 +139,13 @@ for srv in "${SERVERS[@]}"; do
       pulse "${srv}: ${i}/${COUNT}"
     fi
   done
-  pulse_done "${srv}: ${COUNT}/${COUNT} done"
+  pulse_done "${srv}: ${i}/${COUNT} done"
 
-  loss="$(awk -v f="$fail" -v c="$COUNT" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
+  # Denominator is what was sent, not what was planned: one loss in eighty sent
+  # is 1.2%, but divided by a requested COUNT of 200 it reads as 0.5% and
+  # understates the fault.
+  sent=$i
+  loss="$(awk -v f="$fail" -v c="$sent" 'BEGIN { printf "%.1f", (c ? f * 100 / c : 0) }')"
   LOSS_PCTS+=("$loss")
 
   if (( ok > 0 )); then
@@ -141,24 +160,51 @@ for srv in "${SERVERS[@]}"; do
     stats="no replies"
   fi
 
-  printf '%-16s sent %-4d ok %-4d lost %-3d (%s)  %s\n' \
-    "$srv" "$COUNT" "$ok" "$fail" "$(color_loss_pct "$loss")" "$stats"
+  printf '%-16s sent %-4d ok %-4d lost %-3d (%s)  %s%s\n' \
+    "$srv" "$sent" "$ok" "$fail" "$(color_loss_pct "$loss")" "$stats" \
+    "$( (( sent < COUNT )) && printf ' — cut short at %d of %d' "$sent" "$COUNT")"
 done
+release_int
+
+for srv in "${UNQUERIED[@]+"${UNQUERIED[@]}"}"; do
+  printf '%-16s %s\n' "$srv" "$(color_status warn "not queried — run interrupted first")"
+done
+
+if interrupted; then
+  note "interrupted — figures cover the queries sent before the run was stopped"
+fi
+
+# Nothing was measured at all: Ctrl-C landed before the first reply. There is no
+# loss figure to classify, and reporting one would be inventing it.
+if [[ ${#LOSS_PCTS[@]} -eq 0 ]]; then
+  verdict "interrupted before any resolver was queried; no UDP evidence collected." \
+    "Re-run and allow at least one server to complete."
+  finished
+  exit 130
+fi
 
 case "$(classify_loss_set 1 "${LOSS_PCTS[@]}")" in
   all)
     verdict "UDP loss observed to all tested resolvers." \
       "Investigate path policing, NAT state, or venue/ISP UDP handling."
     finished
+    interrupted && exit 130
     exit 2
     ;;
   mixed)
     verdict "results diverge across resolvers." \
       "Likely destination-specific handling rather than a shared path fault."
     finished
+    interrupted && exit 130
     exit 3
     ;;
   *)
+    if interrupted; then
+      verdict "UDP replies received from every resolver reached before the run was interrupted." \
+        "A short sample hides intermittent loss; re-run to completion before reading this as clean."
+      finished
+      exit 130
+    fi
     verdict "UDP replies received from all tested resolvers." \
       "Final-hop loss in mtr -u is often ICMP rate limiting; corroborate before acting."
     finished
