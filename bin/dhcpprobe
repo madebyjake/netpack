@@ -116,9 +116,9 @@ def _opt_str(val: Any) -> str | None:
 
 
 def parse_offer(pkt: Any) -> dict[str, Any]:
-    from scapy.layers.dhcp import DHCP  # type: ignore
-    from scapy.layers.inet import IP  # type: ignore
-    from scapy.layers.l2 import Ether  # type: ignore
+    from scapy.layers.dhcp import DHCP
+    from scapy.layers.inet import IP
+    from scapy.layers.l2 import Ether
 
     bootp = pkt.getlayer("BOOTP")
     dhcp = pkt.getlayer(DHCP)
@@ -162,10 +162,10 @@ def parse_offer(pkt: Any) -> dict[str, Any]:
 
 
 def build_discover(mac: str):
-    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
-    from scapy.layers.inet import IP, UDP  # type: ignore
-    from scapy.layers.l2 import Ether  # type: ignore
-    from scapy.utils import mac2str  # type: ignore
+    from scapy.layers.dhcp import BOOTP, DHCP
+    from scapy.layers.inet import IP, UDP
+    from scapy.layers.l2 import Ether
+    from scapy.utils import mac2str
 
     xid = random.randint(1, 0xFFFFFFFF)
     chaddr = mac2str(mac)
@@ -187,10 +187,10 @@ def build_discover(mac: str):
 
 
 def build_request(mac: str, xid: int, offered_ip: str, server_id: str):
-    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
-    from scapy.layers.inet import IP, UDP  # type: ignore
-    from scapy.layers.l2 import Ether  # type: ignore
-    from scapy.utils import mac2str  # type: ignore
+    from scapy.layers.dhcp import BOOTP, DHCP
+    from scapy.layers.inet import IP, UDP
+    from scapy.layers.l2 import Ether
+    from scapy.utils import mac2str
 
     chaddr = mac2str(mac)
     return (
@@ -212,10 +212,10 @@ def build_request(mac: str, xid: int, offered_ip: str, server_id: str):
 
 
 def build_release(mac: str, leased_ip: str, server_id: str, server_mac: str):
-    from scapy.layers.dhcp import BOOTP, DHCP  # type: ignore
-    from scapy.layers.inet import IP, UDP  # type: ignore
-    from scapy.layers.l2 import Ether  # type: ignore
-    from scapy.utils import mac2str  # type: ignore
+    from scapy.layers.dhcp import BOOTP, DHCP
+    from scapy.layers.inet import IP, UDP
+    from scapy.layers.l2 import Ether
+    from scapy.utils import mac2str
 
     chaddr = mac2str(mac)
     return (
@@ -235,7 +235,7 @@ def build_release(mac: str, leased_ip: str, server_id: str, server_mac: str):
 
 
 def _msg_type(pkt: Any) -> Any:
-    from scapy.layers.dhcp import DHCP  # type: ignore
+    from scapy.layers.dhcp import DHCP
 
     for item in pkt[DHCP].options:
         if isinstance(item, tuple) and item[0] == "message-type":
@@ -247,8 +247,8 @@ def complete_dora(
     iface: str, mac: str, xid: int, offer: dict[str, Any], timeout: float, verbose: bool
 ) -> dict[str, Any]:
     """REQUEST the first offer, await ACK/NAK, and RELEASE any bound lease."""
-    from scapy.layers.dhcp import DHCP  # type: ignore
-    from scapy.sendrecv import sendp, sniff  # type: ignore
+    from scapy.layers.dhcp import DHCP
+    from scapy.sendrecv import sendp, sniff
 
     offered_ip = offer.get("offered_ip")
     server_id = offer.get("server_id")
@@ -345,8 +345,8 @@ def iface_mac(iface: str) -> str:
 def collect_offers(
     iface: str, timeout: float, verbose: bool
 ) -> tuple[list[dict[str, Any]], int, str, bool]:
-    from scapy.layers.dhcp import DHCP  # type: ignore
-    from scapy.sendrecv import sendp, sniff  # type: ignore
+    from scapy.layers.dhcp import DHCP
+    from scapy.sendrecv import sendp, sniff
 
     mac = iface_mac(iface)
     pkt, xid = build_discover(mac)
@@ -556,7 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     try:
-        from scapy.all import conf  # type: ignore
+        from scapy.all import conf
 
         conf.verb = 0
     except (ImportError, AttributeError):
