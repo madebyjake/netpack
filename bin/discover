@@ -13,7 +13,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import cli, report, services
+from netpack import cli, report, services, verdicts
 from netpack.discovery import encode_name, parse_mdns, parse_ssdp
 from netpack.net import NetError, iface_ipv4, resolve_iface
 
@@ -224,34 +224,13 @@ def print_report(
             "(loss under load) at the affected drop."
         )
 
-    total = len(set(ssdp) | set(mdns))
-    scope = "SSDP only" if not mdns_searched else f"SSDP {len(ssdp)}, mDNS {len(mdns)}"
     if interrupted:
         report.warning("interrupted; the listen window(s) did not run to completion")
-    if total == 0:
-        if interrupted:
-            # A silent segment and a window closed after half a second look
-            # identical here, so this must not be read as "nothing is there".
-            report.verdict(
-                "no responders seen before the run was interrupted.",
-                "Too short to call the segment quiet; re-run to completion.",
-            )
-        else:
-            report.verdict(
-                "no SSDP or mDNS responders seen.",
-                "Quiet segment, discovery filtered by client isolation, or nothing advertising.",
-            )
-    elif interrupted:
-        report.verdict(
-            f"{total} host(s) announced services ({scope}) before the run was interrupted.",
-            "Those seen are real; the list is not exhaustive. Re-run to completion "
-            "for a full inventory.",
-        )
-    else:
-        report.verdict(
-            f"{total} host(s) announced services ({scope}).",
-            "Cross-reference with segscan; unexpected advertisers may be rogue devices.",
-        )
+    # Union, not sum: a device answering both protocols is one host.
+    v = verdicts.discovery(
+        len(set(ssdp) | set(mdns)), len(ssdp), len(mdns), mdns_searched, interrupted
+    )
+    report.verdict(v.message, v.next_step)
 
 
 def _ip_key(ip: str) -> tuple:
