@@ -283,6 +283,11 @@ arp_duplicates() {
 parse_iw_scan() {
   awk '
     function chan(f) {
+      # Numeric guard first. A BSS with no freq line leaves f at the "?"
+      # default, and awk compares a non-numeric string against a number as a
+      # string — "?" sorts above "5925", so it reached the 6 GHz branch and the
+      # AP was reported on a band it had never claimed.
+      if (f !~ /^[0-9]+(\.[0-9]+)?$/) return "?"
       if (f == 2484) return 14
       if (f >= 2412 && f <= 2472) return (f - 2407) / 5
       if (f == 5935) return "6G:2"

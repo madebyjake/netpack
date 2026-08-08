@@ -355,3 +355,38 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf '???\t100.0%%\t0.0ms')" ]
 }
+
+@test "parse_iw_scan reports an unknown frequency as ?, not as a band" {
+  # iw omits the freq line for a BSS it could not read one from. The channel
+  # column defaults to "?", and awk compares a non-numeric string against a
+  # number as a string — "?" sorts above "5925", so it reached the 6 GHz branch
+  # and the AP was reported on a band it never claimed.
+  local scan="${BATS_TEST_TMPDIR}/nofreq.txt"
+  printf 'BSS aa:bb:cc:dd:ee:01(on wlan0)\n\tsignal: -42.00 dBm\n\tSSID: NoFreqAP\n' >"$scan"
+  run parse_iw_scan "$scan"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | cut -f2)" = "?" ]
+}
+
+# Holds independently of the bug above: the histogram buckets "6G:"-prefixed
+# rows, so a bare "6G" never reached it. Pinned so the guard cannot be relaxed
+# into emitting a bucketable value for a band that was never read.
+@test "an unknown frequency stays out of the 6 GHz histogram" {
+  local scan="${BATS_TEST_TMPDIR}/nofreq2.txt" aps="${BATS_TEST_TMPDIR}/aps.tsv"
+  printf 'BSS aa:bb:cc:dd:ee:01(on wlan0)\n\tsignal: -42.00 dBm\n\tSSID: NoFreqAP\n' >"$scan"
+  parse_iw_scan "$scan" >"$aps"
+  run wifi_channel_hist_6g "$aps"
+  [ -z "$output" ]
+}
+
+@test "parse_iw_scan still resolves the bands it can read" {
+  local scan="${BATS_TEST_TMPDIR}/bands.txt"
+  {
+    printf 'BSS aa:bb:cc:dd:ee:01(on wlan0)\n\tfreq: 2412\n\tsignal: -42.00 dBm\n\tSSID: A\n'
+    printf 'BSS aa:bb:cc:dd:ee:02(on wlan0)\n\tfreq: 5180\n\tsignal: -50.00 dBm\n\tSSID: B\n'
+    printf 'BSS aa:bb:cc:dd:ee:03(on wlan0)\n\tfreq: 5955\n\tsignal: -60.00 dBm\n\tSSID: C\n'
+  } >"$scan"
+  run parse_iw_scan "$scan"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | cut -f2 | tr '\n' ' ')" = "1 36 6G:1 " ]
+}
