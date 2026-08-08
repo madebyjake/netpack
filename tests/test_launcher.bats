@@ -254,3 +254,43 @@ closed_port() {
   run "${REPO}/bin/netpack" playbook nosuchplaybook
   [ "$status" -eq 1 ]
 }
+
+# --- capture filenames -------------------------------------------------------
+#
+# Stamps are second-resolution (BSD date has no %N). Two runs starting in the
+# same second wrote the same log and json name: the second overwrote the first,
+# while the manifest still listed both rows pointing at the one surviving file.
+
+@test "rapid successive captures each keep their own log and dump" {
+  local dir="${BATS_TEST_TMPDIR}/cap"
+  mkdir -p "$dir"
+  local i
+  for i in 1 2 3 4 5; do
+    "${REPO}/bin/netpack" -o "$dir" portcheck -t 1 127.0.0.1 1 >/dev/null 2>&1 || true
+  done
+  local rows logs dumps
+  rows="$(grep -vc '^#' "${dir}/manifest.tsv")"
+  logs="$(find "$dir" -name '*.log' | wc -l | tr -d ' ')"
+  dumps="$(find "$dir" -name '*.json' | wc -l | tr -d ' ')"
+  [ "$rows" -eq 5 ]
+  [ "$logs" -eq 5 ]
+  [ "$dumps" -eq 5 ]
+}
+
+@test "each manifest row names its own log, and that log exists" {
+  local dir="${BATS_TEST_TMPDIR}/cap2"
+  mkdir -p "$dir"
+  local i
+  for i in 1 2 3; do
+    "${REPO}/bin/netpack" -o "$dir" portcheck -t 1 127.0.0.1 1 >/dev/null 2>&1 || true
+  done
+  local name rows distinct
+  while IFS=$'\t' read -r _ _ _ name _; do
+    [ -f "${dir}/${name}" ]
+  done < <(grep -v '^#' "${dir}/manifest.tsv")
+  # Distinctness is the invariant that breaks: on a collision every row still
+  # names a file that exists, but they all name the same one.
+  rows="$(grep -vc '^#' "${dir}/manifest.tsv")"
+  distinct="$(grep -v '^#' "${dir}/manifest.tsv" | cut -f4 | sort -u | wc -l | tr -d ' ')"
+  [ "$rows" -eq "$distinct" ]
+}

@@ -1,0 +1,10 @@
+portcheck — 2026-08-07T22:59:35-04:00
+host: 127.0.0.1  ports: 1  timeout: 1s
+
+=== probes ===
+  port 1      REFUSED (host up, port closed)
+--
+ASSESSMENT: 1 of 1 probed port(s) did not connect.
+Next: REFUSED means the host answered (service down); TIMEOUT suggests filtering or an unreachable host.
+dump: .json
+finished: 2026-08-07T22:59:35-04:00

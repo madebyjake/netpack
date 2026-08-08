@@ -114,9 +114,10 @@ else
 fi
 
 # Per-run filenames so repeat runs into the same -d DIR never clobber evidence.
-STAMP="$(date +%Y%m%d-%H%M%S)"
-LOG_GW="${DIR}/gw-${STAMP}.log"
-LOG_WAN="${DIR}/wan-${STAMP}.log"
+# Both legs share one claimed base, so a pair always belongs to the same run.
+RUN_BASE="$(unique_path "${DIR}/$(date +%Y%m%d-%H%M%S)" -gw.log -wan.log)"
+LOG_GW="${RUN_BASE}-gw.log"
+LOG_WAN="${RUN_BASE}-wan.log"
 
 cleanup() {
   if [[ "${CLEAN_TMP:-0}" -eq 1 && "$KEEP_LOGS" -eq 0 && -n "${DIR:-}" && -d "$DIR" ]]; then
