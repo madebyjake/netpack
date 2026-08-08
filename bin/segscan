@@ -82,6 +82,9 @@ if command -v lldpcli >/dev/null 2>&1; then
   # need to reach the switch was the one field missing. The grep keeps the
   # output as short as the summary was.
   if out="$(lldpcli show neighbors details 2>/dev/null)"; then
+    # SC2119: the parsers take an optional file and read stdin without one,
+    # which is the form wanted here.
+    # shellcheck disable=SC2119
     filtered="$(printf '%s\n' "$out" | lldp_fields)"
     if [[ -n "$filtered" ]]; then
       printf '%s\n' "$filtered"
