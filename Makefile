@@ -44,13 +44,17 @@ check: lint typecheck compile test bats smoke
 # The user site-packages is added explicitly because ty searches the
 # interpreter's own site-packages only. A `pip install --user scapy` (the usual
 # way to get it on Debian without a venv) then lands somewhere ty cannot see,
-# and every scapy import in dhcpprobe reads as unresolved. Harmless when the
-# directory does not exist.
+# and every scapy import in dhcpprobe reads as unresolved.
+#
+# Passed only when the directory exists: ty exits non-zero on a search path that
+# is not a directory, and CI installs into the interpreter's own site-packages,
+# so there is no user site there at all. The wildcard is how make tests for a
+# directory in 3.81 as well as 4.x.
 USER_SITE = $(shell python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null)
+TY_USER_PATH = $(if $(wildcard $(USER_SITE)/.),--extra-search-path $(USER_SITE))
 
 typecheck:
-	cd $(REPO) && ty check $(if $(USER_SITE),--extra-search-path $(USER_SITE),) \
-	  lib/netpack tests $(PY_TOOLS)
+	cd $(REPO) && ty check $(TY_USER_PATH) lib/netpack tests $(PY_TOOLS)
 
 compile:
 	cd $(REPO) && python3 -m py_compile lib/netpack/*.py $(PY_TOOLS)
