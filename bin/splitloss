@@ -143,8 +143,7 @@ START_EPOCH="$(date +%s)"
 # partial summary and exits, and this shell must survive its interrupted
 # wait(s) to parse those summaries. wait_bg re-waits while the child is
 # still alive, so the recorded status is the ping's, not wait's 130.
-INTERRUPTED=0
-trap 'INTERRUPTED=1' INT
+catch_int
 WAIT_RC=0
 wait_bg() {
   local pid=$1
@@ -173,8 +172,8 @@ if [[ -z "$WAN_SKIP" ]]; then
   RC2=$WAIT_RC
 fi
 set -e
-trap - INT
-if (( INTERRUPTED )); then
+release_int
+if interrupted; then
   note "interrupted — summarizing the completed portion of the window"
 fi
 
@@ -312,9 +311,9 @@ fi
 # Enable temp cleanup only for successful interpretation paths.
 CLEAN_TMP=1
 
-# Ctrl-C is the normal stop for splitloss, so INTERRUPTED is not an error here;
-# it records that the window was shorter than -t asked for, which is what makes
-# the loss percentages comparable to another run or not.
+# Ctrl-C is the normal stop for splitloss, so this is not an error here; it
+# records that the window was shorter than -t asked for, which is what makes the
+# loss percentages comparable to another run or not.
 emit_dump() {
   local code=$1
   [[ -n "$DUMP_PATH" ]] || return 0
@@ -324,7 +323,7 @@ emit_dump() {
   dump_opt_str via "$VIA"
   dump_num duration_s "$T"
   dump_opt_str wan_untestable "$WAN_SKIP"
-  dump_bool interrupted "$( (( INTERRUPTED )) && echo true || echo false)"
+  dump_bool interrupted "$(interrupted && echo true || echo false)"
   dump_write "$DUMP_PATH" splitloss "$code" || true
 }
 
