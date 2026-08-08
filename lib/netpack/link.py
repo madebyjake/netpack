@@ -45,7 +45,9 @@ def eee_is_enabled(status: str | None) -> bool:
     the link is not in low-power idle *right now*, so it can still enter LPI and
     disturb a real-time stream. 'disabled' and 'not supported' are safe.
     """
-    return bool(status) and status.strip().lower().startswith("enabled")
+    # `is not None` rather than bool(): identical at runtime, but a type checker
+    # cannot narrow str | None through a truthiness test in a boolean chain.
+    return status is not None and status.strip().lower().startswith("enabled")
 
 
 def parse_pause(text: str) -> dict[str, str]:

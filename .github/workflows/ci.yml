@@ -34,6 +34,9 @@ jobs:
       - name: ruff
         run: make ruff
 
+      - name: typecheck
+        run: make typecheck
+
       - name: py_compile
         run: make compile
 
@@ -81,6 +84,9 @@ jobs:
 
       - name: ruff
         run: make ruff
+
+      - name: typecheck
+        run: make typecheck
 
       - name: py_compile
         run: make compile

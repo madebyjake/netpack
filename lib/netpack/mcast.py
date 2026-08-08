@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import struct
+from dataclasses import dataclass
 
 # Dante allocates multicast media flows from this range by default (RFC 2365
 # calls it the IPv4 Local Scope). Transmitting probes into a group here can land
@@ -94,3 +95,31 @@ class ProbeStats:
             "duplicates": self.duplicates,
             "jitter_ms": round(self.jitter * 1000, 2),
         }
+
+
+@dataclass
+class Source:
+    """One sender seen on the group during a receive window.
+
+    Typed fields rather than a string-keyed dict: the values are a mix of
+    counters, timestamps and an optional ProbeStats, which a dict flattens into
+    a union that neither a reader nor a type checker can tell apart.
+
+    `probe` is None until a datagram decodes as a netpack probe, so a flow from
+    real AV gear is counted for rate and volume without claiming loss or jitter
+    figures that only netpack's own probes can support.
+    """
+
+    packets: int = 0
+    bytes: int = 0
+    first: float = 0.0
+    last: float = 0.0
+    probe: ProbeStats | None = None
+
+    def rate_mbit_s(self, elapsed: float) -> float:
+        """Average rate over the sender's active span, not the whole listen
+        window, so a flow that started late or ended early is not understated."""
+        span = self.last - self.first
+        if self.packets > 1 and span > 0:
+            return self.bytes * 8 / span / 1e6
+        return self.bytes * 8 / elapsed / 1e6 if elapsed > 0 else 0.0

@@ -17,15 +17,16 @@ SHELL_SCRIPTS = $(shell \
 	find $(REPO)/lib -type f -name '*.sh' | sort)
 PY_TOOLS = bin/dhcpprobe bin/linkstat bin/discover bin/mcastcheck bin/cabletest
 
-.PHONY: help check test bats lint shellcheck ruff compile smoke install uninstall clean
+.PHONY: help check test bats lint shellcheck ruff typecheck compile smoke install uninstall clean
 
 help:
 	@echo "netpack — make targets"
 	@echo
-	@echo "  make check       Everything CI runs (lint, compile, tests, smoke)"
+	@echo "  make check       Everything CI runs (lint, types, compile, tests, smoke)"
 	@echo "  make test        pytest only"
 	@echo "  make bats        bats only"
 	@echo "  make lint        ruff + shellcheck"
+	@echo "  make typecheck   ty over lib/, tests/, and the Python tools"
 	@echo "  make compile     py_compile the Python tools"
 	@echo "  make smoke       Every tool answers --help"
 	@echo "  make install     Symlink netpack and npk into $(BINDIR)"
@@ -34,8 +35,26 @@ help:
 	@echo
 	@echo "Install elsewhere with: make install PREFIX=/usr/local"
 
-check: lint compile test bats smoke
+check: lint typecheck compile test bats smoke
 	@echo "all checks passed"
+
+# ty resolves lib/ via [tool.ty.environment] in pyproject.toml. The bin/ tools
+# are extensionless, which ty handles directly — no per-file invocation needed.
+#
+# The user site-packages is added explicitly because ty searches the
+# interpreter's own site-packages only. A `pip install --user scapy` (the usual
+# way to get it on Debian without a venv) then lands somewhere ty cannot see,
+# and every scapy import in dhcpprobe reads as unresolved.
+#
+# Passed only when the directory exists: ty exits non-zero on a search path that
+# is not a directory, and CI installs into the interpreter's own site-packages,
+# so there is no user site there at all. The wildcard is how make tests for a
+# directory in 3.81 as well as 4.x.
+USER_SITE = $(shell python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null)
+TY_USER_PATH = $(if $(wildcard $(USER_SITE)/.),--extra-search-path $(USER_SITE))
+
+typecheck:
+	cd $(REPO) && ty check $(TY_USER_PATH) lib/netpack tests $(PY_TOOLS)
 
 compile:
 	cd $(REPO) && python3 -m py_compile lib/netpack/*.py $(PY_TOOLS)

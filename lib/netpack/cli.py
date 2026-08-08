@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping
 from typing import NoReturn
 
 EXIT_USAGE = 1
 
 
+# Mapping, not dict: dict is invariant in its value type, so a caller holding a
+# dict[str, str | None] — which is what argparse hands back — is not a
+# dict[str, object] and would be rejected. Mapping is covariant, and read-only
+# is all this needs.
 def foreign_options(
     mode: str,
-    supplied: dict[str, object],
-    owners: dict[str, tuple[str, str]],
+    supplied: Mapping[str, object],
+    owners: Mapping[str, tuple[str, str]],
 ) -> list[str]:
     """Flags that were supplied but belong to a different mode.
 
