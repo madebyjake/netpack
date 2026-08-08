@@ -95,14 +95,27 @@ else
   VIA="$(via_for "$WAN")"
 fi
 
-# Linux ping: -M do (DF), -s payload size. IP+ICMP headers ≈ 28 bytes for IPv4.
-# Working total size ≈ payload + 28.
+# Linux ping: -M probe (DF, bypassing the local PMTU cache), -s payload size.
+# IP+ICMP headers ≈ 28 bytes for IPv4, so working total size ≈ payload + 28.
+#
+# probe rather than do: `do` is "subject to PMTU checks by kernel, packets too
+# large will be rejected" — rejected locally against whatever the kernel has
+# cached for the destination, so the search converged on the cache instead of
+# measuring the path. A route carrying `mtu 1200` on a link that really passes
+# 1500 made this report a reduced path MTU and point at tunnels, PPPoE and
+# firewall DF handling, none of which were involved.
+#
+# `probe` bypasses that check and sends, which is what "the largest payload that
+# reaches the target" means. Where the cache is right the answer is unchanged:
+# the router drops the oversized packet and the reply never arrives. It needs no
+# privilege — ip_sock_set_mtu_discover range-checks the value and nothing else.
+#
 # Accept size if any of two probes succeed so a single drop does not shrink MTU.
 ping_df() {
   local host=$1
   local payload=$2
   pulse "${host}: DF probe, payload ${payload}"
-  ping "${PING_BIND[@]+"${PING_BIND[@]}"}" -c2 -W1 -M "do" -s "$payload" "$host" \
+  ping "${PING_BIND[@]+"${PING_BIND[@]}"}" -c2 -W1 -M "probe" -s "$payload" "$host" \
     >/dev/null 2>&1
 }
 
