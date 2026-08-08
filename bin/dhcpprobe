@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import cli, report
+from netpack import cli, report, verdicts
 from netpack.dhcp import diff_offers
 from netpack.net import (
     NetError,
@@ -477,43 +477,9 @@ def print_report(
     if interrupted:
         report.warning("interrupted; the listen window did not run to completion")
 
-    if len(offers) == 0:
-        if interrupted:
-            # Silence here proves nothing: the window may have closed before a
-            # server had time to answer.
-            report.verdict(
-                "no DHCP response before the run was interrupted.",
-                "Too short to conclude anything; re-run to completion.",
-            )
-        else:
-            report.verdict(
-                "no DHCP response. Server unreachable, wrong VLAN, or no scope on this segment.",
-                "Confirm interface/VLAN membership and that a DHCP service is expected here.",
-            )
-    elif len(offers) == 1:
-        if dora is not None and dora.get("state") != "ack":
-            report.verdict(
-                "server offered an address but did not ACK the REQUEST.",
-                "Suspect a full pool, reservation conflict, or relay breakage; "
-                "check the server's lease log.",
-            )
-        elif interrupted:
-            # "Single server" is the clean result, and a truncated window is the
-            # one way to reach it wrongly — a second server answering later was
-            # simply never waited for.
-            report.verdict(
-                "one DHCP server responded before the run was interrupted.",
-                "This does not rule out a second server; re-run to completion "
-                "before treating the segment as clean.",
-            )
-        else:
-            report.verdict("single DHCP server responded.")
-    else:
-        report.verdict(
-            f"{len(offers)} DHCP servers responded on this segment"
-            f"{' before the run was interrupted' if interrupted else ''}.",
-            "Compare server identifiers and isolate unexpected responders.",
-        )
+    state = dora.get("state") if dora is not None else None
+    v = verdicts.dhcp_offers(len(offers), state, interrupted)
+    report.verdict(v.message, v.next_step)
 
 
 def main(argv: list[str] | None = None) -> int:

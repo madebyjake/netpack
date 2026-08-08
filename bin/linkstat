@@ -12,7 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
 
-from netpack import cli, link, report
+from netpack import cli, link, report, verdicts
 from netpack.net import NetError, is_wireless, resolve_iface
 
 EXIT_OK = 0
@@ -246,64 +246,17 @@ def print_report(
     if interrupted:
         report.warning(f"interrupted after {window:.1f}s; counters cover that window only")
 
-    notes: list[str] = []
-    if err > 0 and drp > 0:
-        notes.append("drop/fifo counters also increased")
-    if err > 0 and flaps > 0 and not wireless:
-        notes.append(f"carrier also flapped {flaps} time(s)")
-    if drp > 0 and flaps > 0 and not wireless and err == 0:
-        notes.append(f"carrier also flapped {flaps} time(s)")
-
-    if err > 0:
-        msg = "error counters increased during the sample (physical layer)."
-        if notes:
-            msg = f"{msg} Also: {'; '.join(notes)}."
-        report.verdict(
-            msg,
-            "Inspect cabling, connectors, NIC, and duplex negotiation.",
-        )
-        return EXIT_PHYSICAL
-
-    # Wi-Fi carrier_changes often move on roam/reassoc; do not treat as flap fault.
-    if flaps > 0 and not wireless:
-        msg = f"carrier flapped {flaps} time(s) during the sample."
-        if notes:
-            msg = f"{msg} Also: {'; '.join(notes)}."
-        report.verdict(
-            msg,
-            "Inspect link stability (cable, SFP, switch port, power).",
-        )
-        return EXIT_FLAP
-
-    if flaps > 0 and wireless:
+    # Reaching here means the physical and non-wireless-flap branches did not
+    # fire, so this is exactly the original condition for the note.
+    if err == 0 and flaps > 0 and wireless:
         report.note(
             f"carrier_changes increased by {flaps} on a wireless interface "
             "(often roam/reassoc; not classified as a flap fault)."
         )
 
-    if drp > 0:
-        msg = "drop/fifo counters increased during the sample (congestion or policy)."
-        if notes:
-            msg = f"{msg} Also: {'; '.join(notes)}."
-        report.verdict(
-            msg,
-            "Check buffer pressure, QoS, and burst load on this port.",
-        )
-        return EXIT_CONGESTION
-
-    if interrupted:
-        report.verdict(
-            f"no error or drop growth in the {window:.1f}s sampled before the run "
-            "was interrupted.",
-            "A short window sees little; re-run to completion while the symptom "
-            "is present before reading this as clean.",
-        )
-    else:
-        report.verdict(
-            "no error or drop growth during the sample window.",
-            "Re-run while the symptom is present.",
-        )
-    return EXIT_OK
+    v = verdicts.link_counters(err, drp, flaps, wireless, window, interrupted)
+    report.verdict(v.message, v.next_step)
+    return v.code
 
 
 def main(argv: list[str] | None = None) -> int:
